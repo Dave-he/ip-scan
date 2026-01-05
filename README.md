@@ -4,6 +4,8 @@
 
 **高性能 IPv4/IPv6 端口扫描工具**
 
+[![CI/CD](https://github.com/Dave-he/ip-scan/workflows/CI%2FCD%20Pipeline/badge.svg)](https://github.com/Dave-he/ip-scan/actions)
+[![Security](https://github.com/Dave-he/ip-scan/workflows/Docker%20Image%20Scan/badge.svg)](https://github.com/Dave-he/ip-scan/actions)
 [![Rust](https://img.shields.io/badge/Rust-1.75+-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Docker](https://img.shields.io/badge/Docker-Ready-blue.svg)](https://www.docker.com/)
@@ -45,7 +47,7 @@ Docker 部署是最简单的方式，无需配置 Rust 环境。
 
 ```bash
 # 1. 克隆项目
-git clone https://github.com/heyongxian/ip-scan.git
+git clone https://github.com/Dave-he/ip-scan.git
 cd ip-scan
 
 # 2. 启动服务（自动构建镜像）
@@ -70,7 +72,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source $HOME/.cargo/env
 
 # 2. 克隆项目
-git clone https://github.com/heyongxian/ip-scan.git
+git clone https://github.com/Dave-he/ip-scan.git
 cd ip-scan
 
 # 3. 编译（Release 模式）
@@ -954,7 +956,7 @@ IP数量: 4,294,967,296
 
 1. **Fork 项目**
    ```bash
-   git clone https://github.com/heyongxian/ip-scan.git
+   git clone https://github.com/Dave-he/ip-scan.git
    cd ip-scan
    ```
 
@@ -1007,7 +1009,7 @@ IP数量: 4,294,967,296
 
 ### 报告问题
 
-发现 Bug 或有新想法？请[创建 Issue](https://github.com/heyongxian/ip-scan/issues)。
+发现 Bug 或有新想法？请[创建 Issue](https://github.com/Dave-he/ip-scan/issues)。
 
 包含以下信息：
 - 问题描述
@@ -1023,7 +1025,7 @@ IP数量: 4,294,967,296
 ```
 MIT License
 
-Copyright (c) 2024 heyongxian
+Copyright (c) 2024 Dave-he
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -1046,9 +1048,9 @@ SOFTWARE.
 
 ## 👨‍💻 作者
 
-**heyongxian**
+**Dave-he**
 
-- GitHub: [@heyongxian](https://github.com/heyongxian)
+- GitHub: [@Dave-he](https://github.com/Dave-he)
 - Email: your.email@example.com
 
 ## 🙏 致谢
@@ -1084,6 +1086,6 @@ SOFTWARE.
 
 **⭐ 如果这个项目对你有帮助，请给它一个 Star！⭐**
 
-Made with ❤️ by [heyongxian](https://github.com/heyongxian)
+Made with ❤️ by [Dave-he](https://github.com/Dave-he)
 
 </div>

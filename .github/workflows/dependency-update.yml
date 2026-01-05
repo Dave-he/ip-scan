@@ -1,0 +1,49 @@
+name: Dependency Update
+
+on:
+  schedule:
+    # 每周一早上 8 点运行
+    - cron: '0 8 * * 1'
+  workflow_dispatch:
+
+jobs:
+  update:
+    name: Update Dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: dtolnay/rust-toolchain@stable
+      
+      - name: Install cargo-edit
+        run: cargo install cargo-edit
+      
+      - name: Update dependencies
+        run: |
+          cargo update
+          cargo upgrade --incompatible
+      
+      - name: Run tests
+        run: cargo test --all-features
+      
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: 'chore: update dependencies'
+          title: 'chore: update dependencies'
+          body: |
+            ## Dependency Updates
+            
+            This PR updates project dependencies to their latest versions.
+            
+            ### Changes
+            - Updated Cargo.lock
+            - Upgraded dependencies where possible
+            
+            ### Testing
+            - ✅ All tests passed
+            
+            Please review the changes and merge if everything looks good.
+          branch: deps/update-dependencies
+          delete-branch: true
