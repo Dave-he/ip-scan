@@ -66,6 +66,7 @@ pub struct Config {
     #[serde(default)]
     pub scan: ScanConfig,
     #[serde(default)]
+    #[allow(dead_code)]
     pub rate_limit: RateLimitConfig,
 }
 
@@ -98,8 +99,10 @@ pub struct ScanConfig {
 #[derive(Debug, Deserialize)]
 pub struct RateLimitConfig {
     #[serde(default = "default_max_rate")]
+    #[allow(dead_code)]
     pub max_rate: u64,
     #[serde(default = "default_window_duration")]
+    #[allow(dead_code)]
     pub window_duration: u64,
 }
 
