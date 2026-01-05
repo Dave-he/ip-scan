@@ -41,23 +41,23 @@ pub struct Args {
     pub verbose: bool,
 
     /// Enable infinite loop scanning mode
-    #[arg(short = 'l', long, env = "SCAN_LOOP_MODE", default_value = "true")]
+    #[arg(short = 'l', long, env = "SCAN_LOOP_MODE", action = clap::ArgAction::SetTrue)]
     pub loop_mode: bool,
 
     /// Scan IPv4 addresses
-    #[arg(long, env = "SCAN_IPV4", default_value = "true")]
+    #[arg(long, env = "SCAN_IPV4", action = clap::ArgAction::SetTrue)]
     pub ipv4: bool,
 
     /// Scan IPv6 addresses
-    #[arg(long, env = "SCAN_IPV6", default_value = "false")]
+    #[arg(long, env = "SCAN_IPV6", action = clap::ArgAction::SetTrue)]
     pub ipv6: bool,
 
     /// Only store open ports (save storage space)
-    #[arg(long, env = "SCAN_ONLY_OPEN", default_value = "true")]
+    #[arg(long, env = "SCAN_ONLY_OPEN", action = clap::ArgAction::SetTrue)]
     pub only_store_open: bool,
 
     /// Skip private IP ranges (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16)
-    #[arg(long, env = "SCAN_SKIP_PRIVATE", default_value = "true")]
+    #[arg(long, env = "SCAN_SKIP_PRIVATE", action = clap::ArgAction::SetTrue)]
     pub skip_private: bool,
 }
 
