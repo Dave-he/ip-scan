@@ -8,7 +8,6 @@ mod rate_limiter;
 
 use anyhow::Result;
 use clap::Parser;
-use std::net::IpAddr;
 use tracing::{info, error, Level};
 use tracing_subscriber;
 

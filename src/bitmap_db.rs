@@ -2,7 +2,7 @@ use anyhow::Result;
 use rusqlite::{Connection, params};
 use std::sync::{Arc, Mutex};
 use chrono::Utc;
-use crate::bitmap::{PortBitmap, ipv4_to_index, index_to_ipv4};
+use crate::bitmap::{PortBitmap, ipv4_to_index};
 
 #[derive(Clone)]
 pub struct BitmapDatabase {
@@ -112,25 +112,6 @@ impl BitmapDatabase {
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(PortBitmap::new()),
             Err(e) => Err(e.into()),
         }
-    }
-
-    pub fn get_port_bitmap(&self, port: u16, ip_type: &str, scan_round: i64) -> Result<PortBitmap> {
-        let conn = self.conn.lock().unwrap();
-        self.get_port_bitmap_internal(&conn, port, ip_type, scan_round)
-    }
-
-    pub fn is_port_open(&self, ip: &str, port: u16, scan_round: i64) -> Result<bool> {
-        let ip_index = ipv4_to_index(ip)?;
-        let bitmap = self.get_port_bitmap(port, "IPv4", scan_round)?;
-        Ok(bitmap.get(ip_index))
-    }
-
-    pub fn get_open_ips_for_port(&self, port: u16, scan_round: i64) -> Result<Vec<String>> {
-        let bitmap = self.get_port_bitmap(port, "IPv4", scan_round)?;
-        let ips: Vec<String> = bitmap.iter_set_bits()
-            .map(|index| index_to_ipv4(index))
-            .collect();
-        Ok(ips)
     }
 
     pub fn get_stats(&self) -> Result<(usize, usize)> {

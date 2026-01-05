@@ -1,7 +1,6 @@
 use anyhow::Result;
 
 const SEGMENT_SIZE: usize = 2 * 1024 * 1024; // 2MB per segment (16,777,216 IPs)
-const BITS_PER_SEGMENT: u32 = (SEGMENT_SIZE * 8) as u32;
 
 pub struct PortBitmap {
     segments: std::collections::HashMap<u32, Vec<u8>>,
@@ -49,52 +48,16 @@ impl PortBitmap {
         }
     }
 
-    pub fn get(&self, ip_index: u32) -> bool {
-        let (segment_id, bit_offset) = Self::get_segment_and_offset(ip_index);
-        
-        if let Some(segment) = self.segments.get(&segment_id) {
-            let byte_index = (bit_offset / 8) as usize;
-            let bit_index = (bit_offset % 8) as u8;
-            (segment[byte_index] & (1 << bit_index)) != 0
-        } else {
-            false
-        }
-    }
-
     pub fn count_ones(&self) -> usize {
         self.segments.values()
             .map(|segment| segment.iter().map(|byte| byte.count_ones() as usize).sum::<usize>())
             .sum()
-    }
-
-    pub fn iter_set_bits(&self) -> impl Iterator<Item = u32> + '_ {
-        self.segments.iter().flat_map(|(segment_id, segment)| {
-            let base = *segment_id << 24;
-            segment.iter().enumerate().flat_map(move |(byte_idx, byte)| {
-                (0..8).filter_map(move |bit_idx| {
-                    if (byte & (1 << bit_idx)) != 0 {
-                        Some(base + (byte_idx * 8 + bit_idx) as u32)
-                    } else {
-                        None
-                    }
-                })
-            })
-        })
-    }
-
-    pub fn memory_usage(&self) -> usize {
-        self.segments.len() * SEGMENT_SIZE
     }
 }
 
 pub fn ipv4_to_index(ip: &str) -> Result<u32> {
     let addr: std::net::Ipv4Addr = ip.parse()?;
     Ok(u32::from(addr))
-}
-
-pub fn index_to_ipv4(index: u32) -> String {
-    let addr = std::net::Ipv4Addr::from(index);
-    addr.to_string()
 }
 
 #[cfg(test)]

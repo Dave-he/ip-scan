@@ -1,5 +1,4 @@
 use clap::Parser;
-use std::env;
 
 #[derive(Parser, Debug)]
 #[command(name = "ip-scan")]
@@ -59,10 +58,6 @@ pub struct Args {
 impl Args {
     pub fn get_default_ipv4_range() -> (String, String) {
         ("0.0.0.0".to_string(), "255.255.255.255".to_string())
-    }
-
-    pub fn get_default_ipv6_range() -> (String, String) {
-        ("::".to_string(), "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff".to_string())
     }
 
     pub fn is_private_ipv4(ip: &str) -> bool {

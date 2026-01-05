@@ -3,7 +3,7 @@ use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 use anyhow::Result;
-use tracing::{debug, info, warn, error};
+use tracing::{debug, info, error};
 use crate::bitmap_db::BitmapDatabase;
 use crate::metrics::ScanMetrics;
 use crate::rate_limiter::RateLimiter;
