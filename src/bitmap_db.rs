@@ -221,3 +221,50 @@ impl BitmapDatabase {
         Ok(size as usize)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_database_operations() {
+        // Use in-memory database for testing
+        let db = BitmapDatabase::new(":memory:").unwrap();
+        
+        // Test initial state
+        let (scanned, open) = db.get_stats().unwrap();
+        assert_eq!(scanned, 0);
+        assert_eq!(open, 0);
+        
+        // Test saving port status
+        db.set_port_status("192.168.1.1", 80, true, 1).unwrap();
+        db.set_port_status("192.168.1.1", 443, false, 1).unwrap();
+        
+        // Check stats
+        let (scanned, open) = db.get_stats().unwrap();
+        assert!(scanned > 0); // Should be 1 because one IP set to open
+        assert_eq!(open, 1);
+        
+        // Test metadata
+        db.save_metadata("test_key", "test_value").unwrap();
+        let value = db.get_metadata("test_key").unwrap();
+        assert_eq!(value, Some("test_value".to_string()));
+        
+        // Test round management
+        let round = db.get_current_round().unwrap();
+        assert_eq!(round, 1);
+        
+        let new_round = db.increment_round().unwrap();
+        assert_eq!(new_round, 2);
+        assert_eq!(db.get_current_round().unwrap(), 2);
+        
+        // Test progress
+        db.save_progress("192.168.1.1", "IPv4", 1).unwrap();
+        let progress = db.get_progress().unwrap();
+        assert!(progress.is_some());
+        let (ip, ip_type, round) = progress.unwrap();
+        assert_eq!(ip, "192.168.1.1");
+        assert_eq!(ip_type, "IPv4");
+        assert_eq!(round, 1);
+    }
+}

@@ -99,3 +99,39 @@ impl Default for ScanMetrics {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_metrics_counters() {
+        let metrics = ScanMetrics::new();
+        
+        metrics.increment_scanned();
+        metrics.increment_scanned();
+        assert_eq!(metrics.get_scanned(), 2);
+        
+        metrics.increment_open();
+        assert_eq!(metrics.get_open(), 1);
+        
+        metrics.increment_errors();
+        assert_eq!(metrics.get_errors(), 1);
+        
+        metrics.increment_retries();
+        assert_eq!(metrics.get_retries(), 1);
+    }
+
+    #[test]
+    fn test_metrics_rates() {
+        let metrics = ScanMetrics::new();
+        
+        // 10 scanned, 8 success, 2 errors, 5 open
+        for _ in 0..10 { metrics.increment_scanned(); }
+        for _ in 0..2 { metrics.increment_errors(); }
+        for _ in 0..5 { metrics.increment_open(); }
+        
+        assert_eq!(metrics.get_success_rate(), 80.0);
+        assert_eq!(metrics.get_open_rate(), 50.0);
+    }
+}

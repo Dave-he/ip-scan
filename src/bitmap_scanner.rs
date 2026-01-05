@@ -193,3 +193,68 @@ impl BitmapScanner {
         &self.metrics
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_scan_port() {
+        // Start a local server
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        
+        // Create scanner
+        let db = BitmapDatabase::new(":memory:").unwrap();
+        let scanner = BitmapScanner::new(db, 500, 10, 1);
+        
+        // Spawn server accept loop
+        tokio::spawn(async move {
+            while let Ok(_) = listener.accept().await {}
+        });
+        
+        // Test open port
+        let ip: IpAddr = "127.0.0.1".parse().unwrap();
+        let result = scanner.scan_port(ip, port).await;
+        assert!(result);
+        
+        // Test closed port
+        // Get a free port and ensure it's closed by binding and dropping
+        let closed_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let closed_port = closed_listener.local_addr().unwrap().port();
+        drop(closed_listener);
+        
+        let result = scanner.scan_port(ip, closed_port).await;
+        assert!(!result);
+    }
+
+    #[tokio::test]
+    async fn test_scan_ip_ports() {
+        // Start a local server
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        
+        tokio::spawn(async move {
+            while let Ok(_) = listener.accept().await {}
+        });
+
+        // Get a free port and ensure it's closed by binding and dropping
+        let closed_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let closed_port = closed_listener.local_addr().unwrap().port();
+        drop(closed_listener);
+
+        let db = BitmapDatabase::new(":memory:").unwrap();
+        let scanner = BitmapScanner::new(db.clone(), 500, 10, 1);
+        let ip: IpAddr = "127.0.0.1".parse().unwrap();
+        
+        let ports = vec![port, closed_port];
+        let open_ports = scanner.scan_ip_ports(ip, ports).await.unwrap();
+        
+        assert_eq!(open_ports.len(), 1, "Expected 1 open port, found {:?}", open_ports);
+        assert_eq!(open_ports[0], port);
+        
+        // Verify metrics
+        assert_eq!(scanner.get_metrics().get_scanned(), 2);
+        assert_eq!(scanner.get_metrics().get_open(), 1);
+    }
+}

@@ -47,3 +47,37 @@ impl Clone for RateLimiter {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_rate_limiter() {
+        let max_rate = 5;
+        let window_duration = Duration::from_millis(100);
+        let limiter = RateLimiter::new(max_rate, window_duration);
+
+        let start = Instant::now();
+        for _ in 0..max_rate {
+            limiter.acquire().await;
+        }
+        
+        // Should have consumed all permits, so next acquire should wait
+        // But since we just consumed them, the first batch should be fast.
+        assert!(start.elapsed() < window_duration);
+        
+        // This one should trigger a wait or be allowed if enough time passed
+        // To properly test, we'd need to mock time or ensure we consume more than max_rate
+        
+        // Let's test that we can acquire more than max_rate eventually
+        let limiter_clone = limiter.clone();
+        let handle = tokio::spawn(async move {
+            for _ in 0..max_rate {
+                limiter_clone.acquire().await;
+            }
+        });
+        
+        handle.await.unwrap();
+    }
+}

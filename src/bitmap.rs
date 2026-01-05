@@ -48,6 +48,18 @@ impl PortBitmap {
         }
     }
 
+    pub fn get(&self, ip_index: u32) -> bool {
+        let (segment_id, bit_offset) = Self::get_segment_and_offset(ip_index);
+        
+        if let Some(segment) = self.segments.get(&segment_id) {
+            let byte_index = (bit_offset / 8) as usize;
+            let bit_index = (bit_offset % 8) as u8;
+            (segment[byte_index] & (1 << bit_index)) != 0
+        } else {
+            false
+        }
+    }
+
     pub fn count_ones(&self) -> usize {
         self.segments.values()
             .map(|segment| segment.iter().map(|byte| byte.count_ones() as usize).sum::<usize>())
@@ -58,6 +70,10 @@ impl PortBitmap {
 pub fn ipv4_to_index(ip: &str) -> Result<u32> {
     let addr: std::net::Ipv4Addr = ip.parse()?;
     Ok(u32::from(addr))
+}
+
+pub fn index_to_ipv4(index: u32) -> String {
+    std::net::Ipv4Addr::from(index).to_string()
 }
 
 #[cfg(test)]

@@ -126,3 +126,49 @@ pub fn parse_port_range(range: &str) -> Result<Vec<u16>, String> {
         Ok(vec![port])
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_ip_range_ipv4() {
+        let range = IpRange::new("192.168.1.1", "192.168.1.5").unwrap();
+        let ips: Vec<IpAddr> = range.iter().collect();
+        assert_eq!(ips.len(), 5);
+        assert_eq!(ips[0].to_string(), "192.168.1.1");
+        assert_eq!(ips[4].to_string(), "192.168.1.5");
+    }
+
+    #[test]
+    fn test_ip_range_ipv6() {
+        let range = IpRange::new("2001:db8::1", "2001:db8::5").unwrap();
+        let ips: Vec<IpAddr> = range.iter().collect();
+        assert_eq!(ips.len(), 5);
+        assert_eq!(ips[0].to_string(), "2001:db8::1");
+        assert_eq!(ips[4].to_string(), "2001:db8::5");
+    }
+
+    #[test]
+    fn test_invalid_range() {
+        assert!(IpRange::new("192.168.1.1", "2001:db8::1").is_err());
+    }
+
+    #[test]
+    fn test_single_ip() {
+        let range = IpRange::new("192.168.1.1", "192.168.1.1").unwrap();
+        let ips: Vec<IpAddr> = range.iter().collect();
+        assert_eq!(ips.len(), 1);
+        assert_eq!(ips[0].to_string(), "192.168.1.1");
+    }
+
+    #[test]
+    fn test_parse_port_range() {
+        assert_eq!(parse_port_range("80").unwrap(), vec![80]);
+        assert_eq!(parse_port_range("80,443").unwrap(), vec![80, 443]);
+        assert_eq!(parse_port_range("1-5").unwrap(), vec![1, 2, 3, 4, 5]);
+        assert!(parse_port_range("1-").is_err());
+        assert!(parse_port_range("a").is_err());
+        assert!(parse_port_range("5-1").is_err());
+    }
+}

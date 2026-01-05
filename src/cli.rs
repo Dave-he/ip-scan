@@ -262,3 +262,22 @@ impl Args {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_private_ipv4() {
+        assert!(Args::is_private_ipv4("10.0.0.1"));
+        assert!(Args::is_private_ipv4("172.16.0.1"));
+        assert!(Args::is_private_ipv4("172.31.255.255"));
+        assert!(Args::is_private_ipv4("192.168.1.1"));
+        assert!(Args::is_private_ipv4("127.0.0.1"));
+        
+        assert!(!Args::is_private_ipv4("8.8.8.8"));
+        assert!(!Args::is_private_ipv4("1.1.1.1"));
+        assert!(!Args::is_private_ipv4("172.15.0.1"));
+        assert!(!Args::is_private_ipv4("172.32.0.1"));
+    }
+}
