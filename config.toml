@@ -1,0 +1,44 @@
+# IP Scanner Configuration
+
+[scan]
+# Start IP address (optional, defaults to full IPv4 range)
+# start_ip = "0.0.0.0"
+# End IP address (optional, defaults to full IPv4 range)
+# end_ip = "255.255.255.255"
+
+# Port range to scan (comma-separated or range)
+ports = "21,22,23,25,53,80,110,143,443,445,3306,3389,5432,6379,8080,8443,9200,27017"
+
+# Connection timeout in milliseconds
+timeout = 50
+
+# Number of concurrent connections
+concurrency = 1000
+
+# Database file path
+database = "scan_results.db"
+
+# Enable verbose output
+verbose = false
+
+# Enable infinite loop scanning mode
+loop_mode = true
+
+# Scan IPv4 addresses
+ipv4 = true
+
+# Scan IPv6 addresses
+ipv6 = true
+
+# Only store open ports (save storage space)
+only_store_open = true
+
+# Skip private IP ranges
+skip_private = true
+
+[rate_limit]
+# Maximum requests per second
+max_rate = 100000
+
+# Rate limit window duration in seconds
+window_duration = 1

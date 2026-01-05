@@ -1,0 +1,41 @@
+version: '3.8'
+
+services:
+  ip-scanner:
+    build: .
+    container_name: ip-scanner
+    volumes:
+      - ./data:/data
+    network_mode: host
+    environment:
+      - RUST_LOG=info
+      - SCAN_PORTS=21,22,23,25,53,80,110,143,443,445,3306,3389,5432,6379,8080,8443,9200,27017
+      - SCAN_TIMEOUT=500
+      - SCAN_CONCURRENCY=100
+      - SCAN_DATABASE=/data/scan_results.db
+      - SCAN_LOOP_MODE=true
+      - SCAN_IPV4=true
+      - SCAN_IPV6=false
+      - SCAN_VERBOSE=false
+      - SCAN_ONLY_OPEN=true
+      - SCAN_SKIP_PRIVATE=true
+    restart: unless-stopped
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "test", "-f", "/data/scan_results.db"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '1'
+          memory: 512M
+

@@ -1,0 +1,8 @@
+# Add this to .dockerignore
+target/
+data/
+*.db
+*.log
+.git/
+.gitignore
+README.md

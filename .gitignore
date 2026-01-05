@@ -1,0 +1,9 @@
+/target
+/data
+*.db
+*.log
+.DS_Store
+.idea
+*.swp
+*.swo
+*~
