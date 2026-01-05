@@ -18,7 +18,7 @@ use bitmap_scanner::BitmapScanner;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let args = Args::parse();
+    let args = Args::parse().merge_with_config()?;
 
     // Initialize logging
     tracing_subscriber::fmt()
