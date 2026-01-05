@@ -8,3 +8,5 @@
 *.swo
 *~
 .trae/
+
+*.db-journal
