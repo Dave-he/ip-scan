@@ -48,6 +48,7 @@ impl PortBitmap {
         }
     }
 
+    #[allow(dead_code)]
     pub fn get(&self, ip_index: u32) -> bool {
         let (segment_id, bit_offset) = Self::get_segment_and_offset(ip_index);
         
@@ -72,6 +73,7 @@ pub fn ipv4_to_index(ip: &str) -> Result<u32> {
     Ok(u32::from(addr))
 }
 
+#[allow(dead_code)]
 pub fn index_to_ipv4(index: u32) -> String {
     std::net::Ipv4Addr::from(index).to_string()
 }
