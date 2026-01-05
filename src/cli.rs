@@ -202,25 +202,39 @@ impl Args {
             if self.database == default_database() {
                 self.database = config.scan.database;
             }
-            // For boolean flags, config file takes precedence only if not explicitly set
+            // For boolean flags, config file provides defaults when flags are not set
             if !self.verbose {
                 self.verbose = config.scan.verbose;
             }
-            // For loop_mode, use config if it's different from default
-            if self.loop_mode == default_loop_mode() {
+            // Use config file values as defaults for boolean flags
+            if !self.loop_mode {
                 self.loop_mode = config.scan.loop_mode;
             }
-            if self.ipv4 == default_ipv4() {
+            if !self.ipv4 {
                 self.ipv4 = config.scan.ipv4;
             }
             if !self.ipv6 {
                 self.ipv6 = config.scan.ipv6;
             }
-            if self.only_store_open == default_only_store_open() {
+            if !self.only_store_open {
                 self.only_store_open = config.scan.only_store_open;
             }
-            if self.skip_private == default_skip_private() {
+            if !self.skip_private {
                 self.skip_private = config.scan.skip_private;
+            }
+        } else {
+            // Apply defaults when no config file is provided
+            if !self.loop_mode {
+                self.loop_mode = default_loop_mode();
+            }
+            if !self.ipv4 {
+                self.ipv4 = default_ipv4();
+            }
+            if !self.only_store_open {
+                self.only_store_open = default_only_store_open();
+            }
+            if !self.skip_private {
+                self.skip_private = default_skip_private();
             }
         }
         Ok(self)
