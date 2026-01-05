@@ -1,5 +1,5 @@
 use std::net::{IpAddr, SocketAddr};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 use anyhow::Result;
@@ -9,6 +9,8 @@ use crate::metrics::ScanMetrics;
 use crate::rate_limiter::RateLimiter;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use tokio::sync::mpsc;
+use tokio::task::JoinSet;
 
 const MAX_RETRIES: usize = 3;
 
@@ -20,6 +22,7 @@ pub struct BitmapScanner {
     scanned_count: Arc<AtomicUsize>,
     metrics: ScanMetrics,
     rate_limiter: RateLimiter,
+    result_tx: mpsc::Sender<(String, u16, bool)>,
 }
 
 impl BitmapScanner {
@@ -27,6 +30,15 @@ impl BitmapScanner {
         // Rate limiter: max 1000 requests per second
         let rate_limiter = RateLimiter::new(1000, Duration::from_secs(1));
         
+        // Channel for batch database writing
+        let (tx, rx) = mpsc::channel(10000);
+
+        // Spawn background writer task
+        let db_clone = db.clone();
+        tokio::spawn(async move {
+            Self::run_db_writer(rx, db_clone, scan_round).await;
+        });
+
         BitmapScanner {
             db,
             timeout_ms,
@@ -35,6 +47,50 @@ impl BitmapScanner {
             scanned_count: Arc::new(AtomicUsize::new(0)),
             metrics: ScanMetrics::new(),
             rate_limiter,
+            result_tx: tx,
+        }
+    }
+
+    async fn run_db_writer(mut rx: mpsc::Receiver<(String, u16, bool)>, db: BitmapDatabase, round: i64) {
+        let mut buffer = Vec::with_capacity(5000);
+        let mut last_flush = Instant::now();
+        const FLUSH_INTERVAL: Duration = Duration::from_secs(1);
+        const BATCH_SIZE: usize = 2000;
+
+        loop {
+            // Use timeout to ensure we flush periodically even if data comes in slowly
+            let result = timeout(Duration::from_millis(100), rx.recv()).await;
+
+            match result {
+                Ok(Some(item)) => {
+                    buffer.push(item);
+                    if buffer.len() >= BATCH_SIZE {
+                        if let Err(e) = db.bulk_update_port_status(buffer.drain(..).collect(), round) {
+                            error!("Failed to bulk update port status: {}", e);
+                        }
+                        last_flush = Instant::now();
+                    }
+                }
+                Ok(None) => break, // Channel closed
+                Err(_) => {
+                    // Timeout
+                }
+            }
+
+            // Check if we need to flush based on time
+            if !buffer.is_empty() && last_flush.elapsed() >= FLUSH_INTERVAL {
+                if let Err(e) = db.bulk_update_port_status(buffer.drain(..).collect(), round) {
+                    error!("Failed to bulk update port status (timer): {}", e);
+                }
+                last_flush = Instant::now();
+            }
+        }
+
+        // Final flush
+        if !buffer.is_empty() {
+            if let Err(e) = db.bulk_update_port_status(buffer, round) {
+                error!("Failed to final bulk update port status: {}", e);
+            }
         }
     }
 
@@ -81,28 +137,26 @@ impl BitmapScanner {
         let ip_str = ip.to_string();
         let ip_type = Self::get_ip_type(&ip);
         
-        let mut tasks = Vec::new();
+        let mut join_set = JoinSet::new();
         
         for port in ports {
             let sem = semaphore.clone();
             let scanner = self.clone_scanner();
             
-            let task = tokio::spawn(async move {
+            join_set.spawn(async move {
                 let _permit = sem.acquire().await.unwrap();
                 scanner.metrics.increment_scanned();
                 let is_open = scanner.scan_port_with_retry(ip, port).await;
                 (port, is_open)
             });
-            
-            tasks.push(task);
         }
 
-        for task in tasks {
-            match task.await {
+        while let Some(res) = join_set.join_next().await {
+            match res {
                 Ok((port, is_open)) => {
-                    if let Err(e) = self.db.set_port_status(&ip_str, port, is_open, self.scan_round) {
-                        error!(ip = %ip, port = port, error = %e, "Failed to save port status");
-                        self.metrics.increment_errors();
+                    // Send to writer channel instead of direct DB write
+                    if let Err(e) = self.result_tx.send((ip_str.clone(), port, is_open)).await {
+                         error!("Failed to send result to writer: {}", e);
                     }
                     
                     if is_open {
@@ -138,55 +192,96 @@ impl BitmapScanner {
             scanned_count: self.scanned_count.clone(),
             metrics: self.metrics.clone(),
             rate_limiter: self.rate_limiter.clone(),
+            result_tx: self.result_tx.clone(),
         }
     }
 
+    pub async fn run_pipeline(
+        &self,
+        mut rx: mpsc::Receiver<IpAddr>,
+        ports: Vec<u16>,
+        progress_callback: impl Fn(usize) + Send + Sync + 'static,
+    ) -> Result<()> {
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(self.concurrent_limit));
+        let progress_callback = Arc::new(progress_callback);
+        let mut join_set = JoinSet::new();
+        let mut total_dispatched = 0;
+
+        // Consumer loop
+        loop {
+            // Wait for next IP or free slot
+            tokio::select! {
+                // Receive new IP
+                Some(ip) = rx.recv() => {
+                    let sem = semaphore.clone();
+                    let ports_clone = ports.clone();
+                    let scanner = self.clone_scanner();
+                    let callback = progress_callback.clone();
+                    
+                    // Acquire permit before spawning to control concurrency
+                    // Note: acquire_owned allows moving the permit into the task
+                    let permit = sem.acquire_owned().await.unwrap();
+                    
+                    join_set.spawn(async move {
+                        // permit is held until task completes
+                        if let Err(e) = scanner.scan_ip_ports(ip, ports_clone).await {
+                            error!(ip = %ip, error = %e, "Failed to scan IP");
+                        }
+                        drop(permit);
+                    });
+                    
+                    total_dispatched += 1;
+                    callback(total_dispatched);
+                }
+                
+                // Reap completed tasks
+                Some(res) = join_set.join_next() => {
+                    if let Err(e) = res {
+                        error!("Task join error: {}", e);
+                    }
+                }
+                
+                else => {
+                    // Channel closed and join_set empty?
+                    if join_set.is_empty() {
+                        break;
+                    }
+                    // If channel closed but tasks running, just wait for tasks
+                     if let Some(res) = join_set.join_next().await {
+                         if let Err(e) = res {
+                            error!("Task join error: {}", e);
+                        }
+                     }
+                }
+            }
+        }
+        
+        // Wait for remaining tasks
+        while let Some(res) = join_set.join_next().await {
+            if let Err(e) = res {
+                error!("Task join error: {}", e);
+            }
+        }
+
+        Ok(())
+    }
+
+    // Deprecated: Kept for compatibility if needed, but run_pipeline is preferred
     pub async fn scan_range(
         &self,
         ips: Vec<IpAddr>,
         ports: Vec<u16>,
         progress_callback: impl Fn(usize, usize) + Send + Sync + 'static,
     ) -> Result<()> {
-        let total = ips.len();
-        let last_ip = ips.last().cloned();
-        let progress_callback = Arc::new(progress_callback);
-        let semaphore = Arc::new(tokio::sync::Semaphore::new(self.concurrent_limit));
+        let (tx, rx) = mpsc::channel(ips.len() + 1);
+        for ip in ips {
+            tx.send(ip).await?;
+        }
+        drop(tx); // Close sender so pipeline knows when to stop
         
-        let mut tasks = Vec::new();
-        
-        for (idx, ip) in ips.into_iter().enumerate() {
-            let sem = semaphore.clone();
-            let ports_clone = ports.clone();
-            let scanner = self.clone_scanner();
-            let callback = progress_callback.clone();
-            
-            let task = tokio::spawn(async move {
-                let _permit = sem.acquire().await.unwrap();
-                if let Err(e) = scanner.scan_ip_ports(ip, ports_clone).await {
-                    error!(ip = %ip, error = %e, "Failed to scan IP");
-                }
-                callback(idx + 1, total);
-            });
-            
-            tasks.push(task);
-        }
-
-        for task in tasks {
-            if let Err(e) = task.await {
-                error!(error = %e, "Task join error");
-            }
-        }
-
-        // Save final progress
-        if let Some(ip) = last_ip {
-            let ip_str = ip.to_string();
-            let ip_type = Self::get_ip_type(&ip);
-            if let Err(e) = self.db.save_progress(&ip_str, ip_type, self.scan_round) {
-                error!(error = %e, "Failed to save final progress");
-            }
-        }
-
-        Ok(())
+        // Adapt callback
+        let cb = move |current| progress_callback(current, 0); // Total unknown in pipeline
+        self.run_pipeline(rx, ports, cb).await
     }
 
     pub fn get_metrics(&self) -> &ScanMetrics {

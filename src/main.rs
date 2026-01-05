@@ -3,6 +3,8 @@ mod ip_range;
 mod bitmap;
 mod bitmap_db;
 mod bitmap_scanner;
+#[cfg(feature = "syn")]
+mod syn_scanner;
 mod metrics;
 mod rate_limiter;
 
@@ -15,6 +17,8 @@ use cli::Args;
 use bitmap_db::BitmapDatabase;
 use ip_range::{IpRange, parse_port_range};
 use bitmap_scanner::BitmapScanner;
+#[cfg(feature = "syn")]
+use syn_scanner::SynScanner;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -26,7 +30,13 @@ async fn main() -> Result<()> {
         .with_target(false)
         .init();
 
-    info!("IP Scanner starting (Bitmap Mode)");
+    info!("IP Scanner starting");
+    if args.syn {
+        info!("Mode: SYN Scan (Requires Root/Admin)");
+    } else {
+        info!("Mode: Connect Scan");
+    }
+    
     info!("Config: concurrency={}, timeout={}ms, db={}, loop={}, ipv4={}, ipv6={}, only_open={}, skip_private={}", 
         args.concurrency, args.timeout, args.database, args.loop_mode, args.ipv4, args.ipv6, args.only_store_open, args.skip_private);
 
@@ -72,49 +82,87 @@ async fn main() -> Result<()> {
             info!("Scanning IPv4: {} - {}", actual_start_ip, end_ip);
             match IpRange::new(&actual_start_ip, &end_ip) {
                 Ok(ip_range) => {
-                    const CHUNK_SIZE: usize = 1000;
-                    let scanner = BitmapScanner::new(db.clone(), args.timeout, args.concurrency, current_round);
                     let start_time = std::time::Instant::now();
-                    let mut total_processed = 0usize;
-                    let mut chunk = Vec::with_capacity(CHUNK_SIZE);
                     
-                    for ip in ip_range.iter() {
-                        // Filter private IPs if enabled
-                        if args.skip_private && Args::is_private_ipv4(&ip.to_string()) {
-                            continue;
-                        }
-                        
-                        chunk.push(ip);
-                        
-                        // Process chunk when it reaches CHUNK_SIZE
-                        if chunk.len() >= CHUNK_SIZE {
-                            let chunk_start = total_processed;
-                            let chunk_to_scan = std::mem::replace(&mut chunk, Vec::with_capacity(CHUNK_SIZE));
-                            
-                            scanner.scan_range(chunk_to_scan, ports.clone(), move |current, _| {
-                                if (chunk_start + current) % 100 == 0 {
-                                    let rate = (chunk_start + current) as f64 / start_time.elapsed().as_secs_f64();
-                                    info!("IPv4 Progress [R{}]: {} IPs - {:.2} IPs/sec", current_round, chunk_start + current, rate);
-                                }
-                            }).await?;
-                            
-                            total_processed += CHUNK_SIZE;
-                        }
-                    }
+                    // Pipeline Channel
+                    let (tx, mut rx) = tokio::sync::mpsc::channel(2000);
                     
-                    // Process remaining IPs
-                    if !chunk.is_empty() {
-                        let chunk_start = total_processed;
-                        scanner.scan_range(chunk, ports.clone(), move |current, _| {
-                            let rate = (chunk_start + current) as f64 / start_time.elapsed().as_secs_f64();
-                            info!("IPv4 Progress [R{}]: {} IPs - {:.2} IPs/sec", current_round, chunk_start + current, rate);
-                        }).await?;
-                    }
+                    // Producer Task
+                    let args_clone = args.clone();
+                    let ip_iter = ip_range.iter();
+                    let producer = tokio::spawn(async move {
+                        for ip in ip_iter {
+                            if args_clone.skip_private && Args::is_private_ipv4(&ip.to_string()) {
+                                continue;
+                            }
+                            if tx.send(ip).await.is_err() {
+                                break;
+                            }
+                        }
+                    });
 
+                    // Consumer (Scanner)
+                    let current_round_clone = current_round;
+                    
+                    #[cfg(feature = "syn")]
+                    let metrics = if args.syn {
+                        // SYN Scan Mode
+                        match SynScanner::new(db.clone(), current_round) {
+                            Ok(scanner) => {
+                                scanner.run_pipeline(rx, ports.clone(), move |total_scanned| {
+                                    if total_scanned % 1000 == 0 {
+                                        let elapsed = start_time.elapsed().as_secs_f64();
+                                        let rate = total_scanned as f64 / elapsed;
+                                        info!("IPv4 Progress [R{}]: {} IPs - {:.2} packets/sec", current_round_clone, total_scanned, rate);
+                                    }
+                                }).await?;
+                                scanner.get_metrics().clone()
+                            },
+                            Err(e) => {
+                                error!("Failed to initialize SYN scanner: {}", e);
+                                return Err(e);
+                            }
+                        }
+                    } else {
+                        // Connect Scan Mode
+                        let scanner = BitmapScanner::new(db.clone(), args.timeout, args.concurrency, current_round);
+                        scanner.run_pipeline(rx, ports.clone(), move |total_scanned| {
+                            if total_scanned % 1000 == 0 {
+                                let elapsed = start_time.elapsed().as_secs_f64();
+                                let rate = total_scanned as f64 / elapsed;
+                                info!("IPv4 Progress [R{}]: {} IPs - {:.2} IPs/sec", current_round_clone, total_scanned, rate);
+                            }
+                        }).await?;
+                        scanner.get_metrics().clone()
+                    };
+
+                    #[cfg(not(feature = "syn"))]
+                    let metrics = {
+                        if args.syn {
+                            error!("SYN scan requested but feature is not enabled. Recompile with --features syn");
+                            // Drain RX to unblock producer if any
+                            while rx.recv().await.is_some() {} 
+                            return Err(anyhow::anyhow!("SYN scan feature disabled"));
+                        }
+                        let scanner = BitmapScanner::new(db.clone(), args.timeout, args.concurrency, current_round);
+                        scanner.run_pipeline(rx, ports.clone(), move |total_scanned| {
+                            if total_scanned % 1000 == 0 {
+                                let elapsed = start_time.elapsed().as_secs_f64();
+                                let rate = total_scanned as f64 / elapsed;
+                                info!("IPv4 Progress [R{}]: {} IPs - {:.2} IPs/sec", current_round_clone, total_scanned, rate);
+                            }
+                        }).await?;
+                        scanner.get_metrics().clone()
+                    };
+                    
+                    // Wait for producer
+                    let _ = producer.await;
+
+                    let total_processed = metrics.get_scanned();
                     info!("IPv4 scan completed: {} IPs in {:.2}s ({:.2} IPs/sec)", 
                         total_processed, start_time.elapsed().as_secs_f64(), 
                         total_processed as f64 / start_time.elapsed().as_secs_f64());
-                    scanner.get_metrics().print_summary();
+                    metrics.print_summary();
                 }
                 Err(e) => error!("Failed to create IPv4 range: {}", e),
             }

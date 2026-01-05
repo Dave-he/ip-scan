@@ -87,7 +87,7 @@ impl ScanMetrics {
         tracing::info!("  Total open ports: {}", self.get_open());
         tracing::info!("  Total errors: {}", self.get_errors());
         tracing::info!("  Total retries: {}", self.get_retries());
-        tracing::info!("  Scan rate: {:.2} IPs/sec", self.get_scan_rate());
+        tracing::info!("  Scan rate: {:.2} targets/sec", self.get_scan_rate());
         tracing::info!("  Success rate: {:.2}%", self.get_success_rate());
         tracing::info!("  Open port rate: {:.4}%", self.get_open_rate());
         tracing::info!("  Elapsed time: {:.2}s", self.start_time.elapsed().as_secs_f64());

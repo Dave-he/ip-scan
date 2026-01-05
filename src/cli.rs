@@ -2,7 +2,7 @@ use clap::Parser;
 use serde::Deserialize;
 use std::path::PathBuf;
 
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 #[command(name = "ip-scan")]
 #[command(author = "IP Scanner")]
 #[command(version = "0.1.0")]
@@ -59,6 +59,10 @@ pub struct Args {
     /// Skip private IP ranges (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16)
     #[arg(long, env = "SCAN_SKIP_PRIVATE", action = clap::ArgAction::SetTrue)]
     pub skip_private: bool,
+
+    /// Enable SYN scan mode (requires Root/Admin)
+    #[arg(long, env = "SCAN_SYN", action = clap::ArgAction::SetTrue)]
+    pub syn: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -94,6 +98,8 @@ pub struct ScanConfig {
     pub only_store_open: bool,
     #[serde(default = "default_skip_private")]
     pub skip_private: bool,
+    #[serde(default)]
+    pub syn: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -121,6 +127,7 @@ impl Default for ScanConfig {
             ipv6: false,
             only_store_open: default_only_store_open(),
             skip_private: default_skip_private(),
+            syn: false,
         }
     }
 }
@@ -222,6 +229,9 @@ impl Args {
             if !self.skip_private {
                 self.skip_private = config.scan.skip_private;
             }
+            if !self.syn {
+                self.syn = config.scan.syn;
+            }
         } else {
             // Apply defaults when no config file is provided
             if !self.loop_mode {
@@ -236,6 +246,7 @@ impl Args {
             if !self.skip_private {
                 self.skip_private = default_skip_private();
             }
+            // syn defaults to false
         }
         Ok(self)
     }

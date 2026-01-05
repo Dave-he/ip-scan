@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use anyhow::Result;
 use rusqlite::{Connection, params};
 use std::sync::{Arc, Mutex};
@@ -57,6 +58,10 @@ impl BitmapDatabase {
             [],
         )?;
 
+        // Optimization: Set WAL mode for better concurrency
+        conn.pragma_update(None, "journal_mode", "WAL")?;
+        conn.pragma_update(None, "synchronous", "NORMAL")?;
+
         Ok(BitmapDatabase {
             conn: Arc::new(Mutex::new(conn)),
         })
@@ -97,6 +102,71 @@ impl BitmapDatabase {
             )?;
         }
 
+        Ok(())
+    }
+
+    pub fn bulk_update_port_status(&self, updates: Vec<(String, u16, bool)>, scan_round: i64) -> Result<()> {
+        if updates.is_empty() {
+            return Ok(());
+        }
+
+        let mut conn = self.conn.lock().unwrap();
+        let transaction = conn.transaction()?;
+
+        // Group by port to minimize bitmap loads/saves
+        let mut updates_by_port: HashMap<u16, Vec<(u32, bool, String)>> = HashMap::new();
+        
+        for (ip, port, is_open) in updates {
+            match ipv4_to_index(&ip) {
+                Ok(ip_index) => {
+                    updates_by_port.entry(port)
+                        .or_default()
+                        .push((ip_index, is_open, ip));
+                },
+                Err(_) => continue, // Skip invalid IPs
+            }
+        }
+
+        for (port, items) in updates_by_port {
+            // 1. Update Bitmap
+            let mut bitmap = self.get_port_bitmap_internal(&transaction, port, "IPv4", scan_round)?;
+            
+            for (ip_index, is_open, _) in &items {
+                bitmap.set(*ip_index, *is_open);
+            }
+            
+            let blob = bitmap.to_blob()?;
+            let open_count = bitmap.count_ones() as i64;
+            let timestamp = Utc::now().to_rfc3339();
+
+            transaction.execute(
+                "INSERT INTO port_bitmaps (port, ip_type, scan_round, bitmap, open_count, last_updated)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT(port, ip_type, scan_round)
+                 DO UPDATE SET bitmap = ?4, open_count = ?5, last_updated = ?6",
+                params![port, "IPv4", scan_round, blob, open_count, timestamp],
+            )?;
+
+            // 2. Update Details (Only for open ports)
+            // Prepare statement for better performance
+            {
+                let mut stmt = transaction.prepare(
+                    "INSERT INTO open_ports_detail (ip_address, ip_type, port, scan_round, first_seen, last_seen)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                     ON CONFLICT(ip_address, port)
+                     DO UPDATE SET scan_round = ?4, last_seen = ?6"
+                )?;
+
+                for (_, is_open, ip) in &items {
+                    if *is_open {
+                        let now = Utc::now().to_rfc3339();
+                        stmt.execute(params![ip, "IPv4", port, scan_round, now.clone(), now])?;
+                    }
+                }
+            }
+        }
+
+        transaction.commit()?;
         Ok(())
     }
 
