@@ -92,8 +92,7 @@ async fn run_scanner(args: &Args) -> Result<()> {
         None
     };
 
-    // Run scanner
-    run_scanner_logic(db, args).await
+    run_scanner_logic(db, args, geo_service).await
 }
 
 /// Run both scanner and API server
@@ -108,7 +107,8 @@ async fn run_combined(args: &Args) -> Result<()> {
     let scanner_args = args.clone();
     let scanner_db = db.clone();
     let scanner_handle = tokio::spawn(async move {
-        if let Err(e) = run_scanner_logic(scanner_db, &scanner_args).await {
+        let geo = if !scanner_args.no_geo { Some(GeoService::new(scanner_args.geoip_db.as_deref())) } else { None };
+        if let Err(e) = run_scanner_logic(scanner_db, &scanner_args, geo).await {
             error!("Scanner error: {}", e);
         }
     });
@@ -126,8 +126,6 @@ async fn run_combined(args: &Args) -> Result<()> {
 async fn start_api_server(db: SqliteDB, args: &Args) -> Result<()> {
     use actix_cors::Cors;
     use actix_web::{web, App, HttpServer};
-    use utoipa::OpenApi;
-    use utoipa_swagger_ui::SwaggerUi;
     
     let db_data = web::Data::new(db);
     
@@ -153,12 +151,12 @@ async fn start_api_server(db: SqliteDB, args: &Args) -> Result<()> {
             .app_data(db_data.clone())
             .configure(api::init_routes);
         
-        // Add Swagger UI if enabled
         if swagger_ui_enabled {
-            app = app.service(
-                SwaggerUi::new("/swagger-ui/{_:.*}")
-                    .url("/api-docs/openapi.json", openapi.clone()),
-            );
+            let openapi_clone = openapi.clone();
+            app = app.route("/api-docs/openapi.json", web::get().to(move || {
+                let json = serde_json::to_string(&openapi_clone).unwrap_or_else(|_| "{}".to_string());
+                actix_web::HttpResponse::Ok().content_type("application/json").body(json)
+            }));
         }
         
         app
@@ -168,8 +166,8 @@ async fn start_api_server(db: SqliteDB, args: &Args) -> Result<()> {
     server = server.bind((api_host.as_str(), api_port))?;
     
     info!("API server started successfully");
-    info!("Swagger UI available at: http://{}:{}/swagger-ui/", args.api_host, args.api_port);
-    info!("API endpoints available at: http://{}:{}/api/v1/", args.api_host, args.api_port);
+    info!("API endpoints: http://{}:{}/api/v1/", args.api_host, args.api_port);
+    info!("OpenAPI JSON: http://{}:{}/api-docs/openapi.json", args.api_host, args.api_port);
     
     server.run().await?;
     
@@ -177,7 +175,7 @@ async fn start_api_server(db: SqliteDB, args: &Args) -> Result<()> {
 }
 
 /// Scanner logic (extracted from original main function)
-async fn run_scanner_logic(db: SqliteDB, args: &Args) -> Result<()> {
+async fn run_scanner_logic(db: SqliteDB, args: &Args, geo_service: Option<GeoService>) -> Result<()> {
     use model::{parse_port_range, IpRange};
     use service::{ConScanner, SynScanner};
     

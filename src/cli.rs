@@ -130,6 +130,7 @@ pub struct Args {
 
     #[arg(long, env = "SCAN_RATE_WINDOW_S", default_value = "1")]
     pub rate_window_secs: u64,
+
 }
 
 #[derive(Debug, Deserialize)]
@@ -184,6 +185,18 @@ pub struct ScanConfig {
     pub max_rate: u64,
     #[serde(default = "default_window_duration")]
     pub rate_window_secs: u64,
+    #[serde(default)]
+    pub api: bool,
+    #[serde(default)]
+    pub api_only: bool,
+    #[serde(default)]
+    pub no_api: bool,
+    #[serde(default = "default_api_host")]
+    pub api_host: String,
+    #[serde(default = "default_api_port")]
+    pub api_port: u16,
+    #[serde(default)]
+    pub swagger_ui: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -221,6 +234,12 @@ impl Default for ScanConfig {
             flush_interval_ms: default_flush_interval_ms(),
             max_rate: default_max_rate(),
             rate_window_secs: default_window_duration(),
+            api: false,
+            api_only: false,
+            no_api: false,
+            api_host: default_api_host(),
+            api_port: default_api_port(),
+            swagger_ui: false,
         }
     }
 }
@@ -288,6 +307,14 @@ fn default_db_batch_size() -> usize {
 
 fn default_flush_interval_ms() -> u64 {
     1000
+}
+
+fn default_api_host() -> String {
+    "127.0.0.1".to_string()
+}
+
+fn default_api_port() -> u16 {
+    8080
 }
 
 impl Args {
@@ -377,6 +404,24 @@ impl Args {
             }
             if self.rate_window_secs == default_window_duration() {
                 self.rate_window_secs = config.scan.rate_window_secs;
+            }
+            if !self.api {
+                self.api = config.scan.api;
+            }
+            if !self.api_only {
+                self.api_only = config.scan.api_only;
+            }
+            if !self.no_api {
+                self.no_api = config.scan.no_api;
+            }
+            if self.api_host == default_api_host() {
+                self.api_host = config.scan.api_host;
+            }
+            if self.api_port == default_api_port() {
+                self.api_port = config.scan.api_port;
+            }
+            if !self.swagger_ui {
+                self.swagger_ui = config.scan.swagger_ui;
             }
         } else {
             // Apply defaults when no config file is found
