@@ -42,7 +42,7 @@ async fn async_main(args: Args) -> Result<()> {
             .with_max_level(Level::INFO)
             .with_target(false)
     };
-    
+
     log_format.init();
 
     // Determine running mode

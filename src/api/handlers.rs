@@ -335,15 +335,67 @@ pub async fn get_top_ports(
     tag = "Scan Control"
 )]
 pub async fn start_scan(
-    _db: web::Data<SqliteDB>,
-    _request: web::Json<StartScanRequest>,
+    db: web::Data<SqliteDB>,
+    request: web::Json<StartScanRequest>,
 ) -> impl Responder {
-    // TODO: Implement scan control logic
-    // For now, return a placeholder response
+    // Validate request parameters
+    if let Some(ref ports) = request.ports {
+        if ports.is_empty() {
+            return HttpResponse::BadRequest().json(ErrorResponse {
+                error: "Ports list cannot be empty".to_string(),
+                code: Some("INVALID_PORTS".to_string()),
+            });
+        }
+    } else {
+        return HttpResponse::BadRequest().json(ErrorResponse {
+            error: "Ports parameter is required".to_string(),
+            code: Some("MISSING_PORTS".to_string()),
+        });
+    }
+
+    // Check if a scan is already in progress by checking metadata
+    match db.get_metadata("scan_status") {
+        Ok(Some(status)) if status == "running" => {
+            return HttpResponse::Conflict().json(ErrorResponse {
+                error: "A scan is already in progress".to_string(),
+                code: Some("SCAN_IN_PROGRESS".to_string()),
+            });
+        }
+        Err(e) => {
+            error!("Failed to check scan status: {}", e);
+            return HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Failed to check scan status".to_string(),
+                code: Some("DATABASE_ERROR".to_string()),
+            });
+        }
+        _ => {}
+    }
+
+    // Mark scan as running
+    if let Err(e) = db.save_metadata("scan_status", "running") {
+        error!("Failed to update scan status: {}", e);
+        return HttpResponse::InternalServerError().json(ErrorResponse {
+            error: "Failed to start scan".to_string(),
+            code: Some("DATABASE_ERROR".to_string()),
+        });
+    }
+
+    // Generate scan ID
+    let scan_id = format!("scan-{}", chrono::Utc::now().timestamp());
+
+    // Save scan parameters to metadata
+    let _ = db.save_metadata("last_scan_id", &scan_id);
+    let _ = db.save_metadata("last_scan_start_time", &chrono::Utc::now().to_rfc3339());
+
+    let start_ip = request.start_ip.as_deref().unwrap_or("0.0.0.0");
+    let end_ip = request.end_ip.as_deref().unwrap_or("255.255.255.255");
+
     HttpResponse::Accepted().json(json!({
         "message": "Scan start request accepted",
-        "scan_id": "placeholder-scan-id",
-        "status": "queued"
+        "scan_id": scan_id,
+        "status": "running",
+        "target": format!("{} - {}", start_ip, end_ip),
+        "ports": request.ports.as_deref().unwrap_or("")
     }))
 }
 
@@ -358,12 +410,39 @@ pub async fn start_scan(
     ),
     tag = "Scan Control"
 )]
-pub async fn stop_scan(_db: web::Data<SqliteDB>) -> impl Responder {
-    // TODO: Implement scan control logic
-    HttpResponse::Ok().json(json!({
-        "message": "Scan stop request accepted",
-        "status": "stopping"
-    }))
+pub async fn stop_scan(db: web::Data<SqliteDB>) -> impl Responder {
+    // Check if a scan is running
+    match db.get_metadata("scan_status") {
+        Ok(Some(status)) if status == "running" => {
+            // Mark scan as stopped
+            if let Err(e) = db.save_metadata("scan_status", "stopped") {
+                error!("Failed to update scan status: {}", e);
+                return HttpResponse::InternalServerError().json(ErrorResponse {
+                    error: "Failed to stop scan".to_string(),
+                    code: Some("DATABASE_ERROR".to_string()),
+                });
+            }
+
+            // Save stop time
+            let _ = db.save_metadata("last_scan_stop_time", &chrono::Utc::now().to_rfc3339());
+
+            HttpResponse::Ok().json(json!({
+                "message": "Scan stop request accepted",
+                "status": "stopped"
+            }))
+        }
+        Ok(Some(_)) | Ok(None) => HttpResponse::NotFound().json(ErrorResponse {
+            error: "No scan in progress".to_string(),
+            code: Some("NO_SCAN_RUNNING".to_string()),
+        }),
+        Err(e) => {
+            error!("Failed to check scan status: {}", e);
+            HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Failed to check scan status".to_string(),
+                code: Some("DATABASE_ERROR".to_string()),
+            })
+        }
+    }
 }
 
 /// Get current scan status
@@ -376,12 +455,31 @@ pub async fn stop_scan(_db: web::Data<SqliteDB>) -> impl Responder {
     ),
     tag = "Scan Control"
 )]
-pub async fn get_scan_status(_db: web::Data<SqliteDB>) -> impl Responder {
-    // TODO: Implement scan status logic
+pub async fn get_scan_status(db: web::Data<SqliteDB>) -> impl Responder {
+    // Get scan status from metadata
+    let status = db
+        .get_metadata("scan_status")
+        .unwrap_or(Some("idle".to_string()))
+        .unwrap_or("idle".to_string());
+    let current_round = db.get_current_round().unwrap_or(1);
+    let last_scan_time = db.get_last_scan_time().unwrap_or(None);
+
+    // Get last scan ID if available
+    let scan_id = db.get_metadata("last_scan_id").ok().flatten();
+
+    // Get scan start time if available
+    let start_time = db.get_metadata("last_scan_start_time").ok().flatten();
+
+    // Get scan stop time if available
+    let stop_time = db.get_metadata("last_scan_stop_time").ok().flatten();
+
     HttpResponse::Ok().json(json!({
-        "status": "idle",
-        "current_round": 1,
-        "last_scan_time": null,
+        "status": status,
+        "current_round": current_round,
+        "last_scan_time": last_scan_time,
+        "scan_id": scan_id,
+        "start_time": start_time,
+        "stop_time": stop_time,
         "next_scheduled_scan": null
     }))
 }
@@ -396,13 +494,36 @@ pub async fn get_scan_status(_db: web::Data<SqliteDB>) -> impl Responder {
     ),
     tag = "Scan Control"
 )]
-pub async fn get_scan_history(_db: web::Data<SqliteDB>) -> impl Responder {
-    // TODO: Implement scan history logic
-    HttpResponse::Ok().json(json!({
-        "scans": []
-    }))
-}
+pub async fn get_scan_history(db: web::Data<SqliteDB>) -> impl Responder {
+    // Get scan history using the new public method
+    match db.get_scan_history(50) {
+        Ok(history) => {
+            let scans: Vec<_> = history
+                .into_iter()
+                .map(|record| {
+                    json!({
+                        "round": record.round,
+                        "start_time": record.start_time,
+                        "end_time": record.end_time,
+                        "total_open_ports": record.total_open_ports,
+                        "ports_scanned": record.ports_scanned
+                    })
+                })
+                .collect();
 
+            HttpResponse::Ok().json(json!({
+                "scans": scans
+            }))
+        }
+        Err(e) => {
+            error!("Failed to retrieve scan history: {}", e);
+            HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Failed to retrieve scan history".to_string(),
+                code: Some("DATABASE_ERROR".to_string()),
+            })
+        }
+    }
+}
 /// Export scan results as CSV
 #[utoipa::path(
     get,
@@ -414,19 +535,48 @@ pub async fn get_scan_history(_db: web::Data<SqliteDB>) -> impl Responder {
     ),
     tag = "Export"
 )]
-pub async fn export_csv(
-    _db: web::Data<SqliteDB>,
-    _query: web::Query<FilterQuery>,
-) -> impl Responder {
-    // TODO: Implement CSV export
-    // For now, return a placeholder
-    HttpResponse::Ok()
-        .content_type("text/csv")
-        .append_header((
-            "Content-Disposition",
-            "attachment; filename=\"scan_results.csv\"",
-        ))
-        .body("ip_address,ip_type,port,scan_round,first_seen,last_seen\n")
+pub async fn export_csv(db: web::Data<SqliteDB>, query: web::Query<FilterQuery>) -> impl Responder {
+    // Get results with filters
+    match db.get_scan_results(
+        1,
+        100000, // Large page size for export
+        query.ip.as_deref(),
+        query.port,
+        query.round,
+        query.ip_type.as_deref(),
+    ) {
+        Ok((results, _)) => {
+            let mut csv_content =
+                String::from("ip_address,ip_type,port,scan_round,first_seen,last_seen\n");
+
+            for result in results {
+                csv_content.push_str(&format!(
+                    "{},{},{},{},{},{}\n",
+                    result.ip_address,
+                    result.ip_type,
+                    result.port,
+                    result.scan_round,
+                    result.first_seen,
+                    result.last_seen
+                ));
+            }
+
+            HttpResponse::Ok()
+                .content_type("text/csv")
+                .append_header((
+                    "Content-Disposition",
+                    "attachment; filename=\"scan_results.csv\"",
+                ))
+                .body(csv_content)
+        }
+        Err(e) => {
+            error!("Failed to export CSV: {}", e);
+            HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Failed to export scan results".to_string(),
+                code: Some("DATABASE_ERROR".to_string()),
+            })
+        }
+    }
 }
 
 /// Export scan results as JSON
@@ -441,12 +591,41 @@ pub async fn export_csv(
     tag = "Export"
 )]
 pub async fn export_json(
-    _db: web::Data<SqliteDB>,
-    _query: web::Query<FilterQuery>,
+    db: web::Data<SqliteDB>,
+    query: web::Query<FilterQuery>,
 ) -> impl Responder {
-    // TODO: Implement JSON export
-    // For now, return empty array
-    HttpResponse::Ok().json(Vec::<ScanResult>::new())
+    // Get results with filters
+    match db.get_scan_results(
+        1,
+        100000, // Large page size for export
+        query.ip.as_deref(),
+        query.port,
+        query.round,
+        query.ip_type.as_deref(),
+    ) {
+        Ok((results, _)) => {
+            let api_results: Vec<ScanResult> = results
+                .into_iter()
+                .map(|r| ScanResult {
+                    ip_address: r.ip_address,
+                    ip_type: r.ip_type,
+                    port: r.port,
+                    scan_round: r.scan_round,
+                    first_seen: r.first_seen,
+                    last_seen: r.last_seen,
+                })
+                .collect();
+
+            HttpResponse::Ok().json(api_results)
+        }
+        Err(e) => {
+            error!("Failed to export JSON: {}", e);
+            HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Failed to export scan results".to_string(),
+                code: Some("DATABASE_ERROR".to_string()),
+            })
+        }
+    }
 }
 
 /// Export scan results as NDJSON (Newline Delimited JSON)
@@ -461,12 +640,45 @@ pub async fn export_json(
     tag = "Export"
 )]
 pub async fn export_ndjson(
-    _db: web::Data<SqliteDB>,
-    _query: web::Query<FilterQuery>,
+    db: web::Data<SqliteDB>,
+    query: web::Query<FilterQuery>,
 ) -> impl Responder {
-    // TODO: Implement NDJSON export
-    // For now, return empty
-    HttpResponse::Ok()
-        .content_type("application/x-ndjson")
-        .body("")
+    // Get results with filters
+    match db.get_scan_results(
+        1,
+        100000, // Large page size for export
+        query.ip.as_deref(),
+        query.port,
+        query.round,
+        query.ip_type.as_deref(),
+    ) {
+        Ok((results, _)) => {
+            let mut ndjson_content = String::new();
+
+            for result in results {
+                let json_line = json!({
+                    "ip_address": result.ip_address,
+                    "ip_type": result.ip_type,
+                    "port": result.port,
+                    "scan_round": result.scan_round,
+                    "first_seen": result.first_seen,
+                    "last_seen": result.last_seen
+                });
+
+                ndjson_content.push_str(&serde_json::to_string(&json_line).unwrap_or_default());
+                ndjson_content.push('\n');
+            }
+
+            HttpResponse::Ok()
+                .content_type("application/x-ndjson")
+                .body(ndjson_content)
+        }
+        Err(e) => {
+            error!("Failed to export NDJSON: {}", e);
+            HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Failed to export scan results".to_string(),
+                code: Some("DATABASE_ERROR".to_string()),
+            })
+        }
+    }
 }

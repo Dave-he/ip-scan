@@ -437,10 +437,10 @@ impl Args {
                 self.skip_private = default_skip_private();
             }
         }
-        
+
         // Validate configuration
         self.validate()?;
-        
+
         Ok(self)
     }
 
@@ -450,12 +450,12 @@ impl Args {
         if self.timeout == 0 {
             return Err(anyhow::anyhow!("Timeout must be greater than 0"));
         }
-        
+
         // Validate concurrency
         if self.concurrency == 0 {
             return Err(anyhow::anyhow!("Concurrency must be greater than 0"));
         }
-        
+
         // Validate buffer sizes
         if self.pipeline_buffer == 0 {
             return Err(anyhow::anyhow!("Pipeline buffer must be greater than 0"));
@@ -466,7 +466,7 @@ impl Args {
         if self.db_batch_size == 0 {
             return Err(anyhow::anyhow!("DB batch size must be greater than 0"));
         }
-        
+
         // Validate rate limiting
         if self.max_rate == 0 {
             return Err(anyhow::anyhow!("Max rate must be greater than 0"));
@@ -474,22 +474,26 @@ impl Args {
         if self.rate_window_secs == 0 {
             return Err(anyhow::anyhow!("Rate window must be greater than 0"));
         }
-        
+
         // Validate API port
         if self.api_port == 0 {
             return Err(anyhow::anyhow!("API port must be greater than 0"));
         }
-        
+
         // Validate conflicting options
         if self.api_only && self.no_api {
-            return Err(anyhow::anyhow!("Cannot use --api-only and --no-api together"));
+            return Err(anyhow::anyhow!(
+                "Cannot use --api-only and --no-api together"
+            ));
         }
-        
+
         // Validate IP version selection
         if !self.ipv4 && !self.ipv6 {
-            return Err(anyhow::anyhow!("At least one of --ipv4 or --ipv6 must be enabled"));
+            return Err(anyhow::anyhow!(
+                "At least one of --ipv4 or --ipv6 must be enabled"
+            ));
         }
-        
+
         Ok(())
     }
 

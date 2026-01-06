@@ -38,14 +38,23 @@ pub struct ConScannerConfig {
 
 impl ConScanner {
     pub fn new(db: SqliteDB, scan_round: i64, config: ConScannerConfig) -> Self {
-        let rate_limiter =
-            RateLimiter::new(config.max_rate as usize, Duration::from_secs(config.rate_window_secs));
+        let rate_limiter = RateLimiter::new(
+            config.max_rate as usize,
+            Duration::from_secs(config.rate_window_secs),
+        );
 
         let (tx, rx) = mpsc::channel(config.result_buffer);
 
         let db_clone = db.clone();
         tokio::spawn(async move {
-            Self::run_db_writer(rx, db_clone, scan_round, config.db_batch_size, config.flush_interval_ms).await;
+            Self::run_db_writer(
+                rx,
+                db_clone,
+                scan_round,
+                config.db_batch_size,
+                config.flush_interval_ms,
+            )
+            .await;
         });
 
         ConScanner {

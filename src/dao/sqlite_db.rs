@@ -311,10 +311,11 @@ impl SqliteDB {
             |row| row.get(0),
         )?;
 
-        let unique_open: usize =
-            conn.query_row("SELECT COUNT(DISTINCT ip_address) FROM open_ports_detail", [], |row| {
-                row.get(0)
-            })?;
+        let unique_open: usize = conn.query_row(
+            "SELECT COUNT(DISTINCT ip_address) FROM open_ports_detail",
+            [],
+            |row| row.get(0),
+        )?;
 
         Ok((total_scanned as usize, unique_open))
     }
@@ -617,6 +618,37 @@ impl SqliteDB {
             Err(e) => Err(e.into()),
         }
     }
+
+    /// Get scan history grouped by scan round
+    pub fn get_scan_history(&self, limit: usize) -> Result<Vec<ScanHistoryRecord>> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT scan_round, 
+                    MIN(last_updated) as start_time,
+                    MAX(last_updated) as end_time,
+                    SUM(open_count) as total_open_ports,
+                    COUNT(DISTINCT port) as ports_scanned
+             FROM port_bitmaps 
+             GROUP BY scan_round 
+             ORDER BY scan_round DESC 
+             LIMIT ?"
+        )?;
+
+        let results = stmt
+            .query_map([limit as i64], |row| {
+                Ok(ScanHistoryRecord {
+                    round: row.get(0)?,
+                    start_time: row.get(1)?,
+                    end_time: row.get(2)?,
+                    total_open_ports: row.get::<_, i64>(3)? as usize,
+                    ports_scanned: row.get::<_, i64>(4)? as usize,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(results)
+    }
 }
 
 /// Detailed scan result for API responses
@@ -628,6 +660,16 @@ pub struct ScanResultDetail {
     pub scan_round: i64,
     pub first_seen: String,
     pub last_seen: String,
+}
+
+/// Scan history record
+#[derive(Debug)]
+pub struct ScanHistoryRecord {
+    pub round: i64,
+    pub start_time: Option<String>,
+    pub end_time: Option<String>,
+    pub total_open_ports: usize,
+    pub ports_scanned: usize,
 }
 
 #[cfg(test)]

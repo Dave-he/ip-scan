@@ -135,11 +135,17 @@ pub struct ErrorResponse {
 #[derive(Debug, Deserialize, ToSchema, IntoParams)]
 pub struct PaginationQuery {
     /// Page number (1-indexed, default: 1)
-    #[serde(default = "default_page", deserialize_with = "deserialize_number_from_string")]
+    #[serde(
+        default = "default_page",
+        deserialize_with = "deserialize_number_from_string"
+    )]
     pub page: usize,
 
     /// Page size (default: 50, max: 500)
-    #[serde(default = "default_page_size", deserialize_with = "deserialize_number_from_string")]
+    #[serde(
+        default = "default_page_size",
+        deserialize_with = "deserialize_number_from_string"
+    )]
     pub page_size: usize,
 }
 
