@@ -10,9 +10,9 @@ use pnet::packet::Packet;
 use tracing::{info, error, debug};
 
 use std::thread;
-use crate::rate_limiter::RateLimiter;
-use crate::metrics::ScanMetrics;
-use crate::bitmap_db::BitmapDatabase;
+use crate::model::ScanMetrics;
+use super::RateLimiter;
+use crate::dao::SqliteDB;
 use tokio::time::timeout;
 
 pub struct SynScanner {
@@ -22,13 +22,13 @@ pub struct SynScanner {
     rate_limiter: RateLimiter,
     metrics: ScanMetrics,
     #[allow(dead_code)]
-    db: BitmapDatabase,
+    db: SqliteDB,
     #[allow(dead_code)]
     scan_round: i64,
 }
 
 impl SynScanner {
-    pub fn new(db: BitmapDatabase, scan_round: i64) -> Result<Self> {
+    pub fn new(db: SqliteDB, scan_round: i64) -> Result<Self> {
         // 1. Determine Local IP
         let local_ip = Self::get_local_ip()?;
         info!("SYN Scanner using local IP: {}", local_ip);
@@ -62,7 +62,7 @@ impl SynScanner {
                      Ok(Some(item)) => {
                          buffer.push(item);
                          if buffer.len() >= BATCH_SIZE {
-                             if let Err(e) = db_clone.bulk_update_port_status(buffer.drain(..).collect(), scan_round) {
+                             if let Err(e) = db_clone.bulk_update_port_status(std::mem::take(&mut buffer), scan_round) {
                                  error!("Failed to bulk update port status: {}", e);
                              }
                              last_flush = Instant::now();
@@ -73,7 +73,7 @@ impl SynScanner {
                  }
 
                  if !buffer.is_empty() && last_flush.elapsed() >= FLUSH_INTERVAL {
-                     if let Err(e) = db_clone.bulk_update_port_status(buffer.drain(..).collect(), scan_round) {
+                     if let Err(e) = db_clone.bulk_update_port_status(std::mem::take(&mut buffer), scan_round) {
                          error!("Failed to bulk update port status (timer): {}", e);
                      }
                      last_flush = Instant::now();

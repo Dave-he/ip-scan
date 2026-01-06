@@ -1,24 +1,18 @@
 mod cli;
-mod ip_range;
-mod bitmap;
-mod bitmap_db;
-mod bitmap_scanner;
-#[cfg(feature = "syn")]
-mod syn_scanner;
-mod metrics;
-mod rate_limiter;
+mod dao;
+mod model;
+mod service;
 
 use anyhow::Result;
 use clap::Parser;
 use tracing::{info, error, Level};
-use tracing_subscriber;
 
 use cli::Args;
-use bitmap_db::BitmapDatabase;
-use ip_range::{IpRange, parse_port_range};
-use bitmap_scanner::BitmapScanner;
+use dao::SqliteDB;
+use model::{IpRange, parse_port_range};
+use service::ConScanner;
 #[cfg(feature = "syn")]
-use syn_scanner::SynScanner;
+use service::SynScanner;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -41,7 +35,7 @@ async fn main() -> Result<()> {
         args.concurrency, args.timeout, args.database, args.loop_mode, args.ipv4, args.ipv6, args.only_store_open, args.skip_private);
 
     // Initialize bitmap database
-    let db = BitmapDatabase::new(&args.database)?;
+    let db = SqliteDB::new(&args.database)?;
     info!("Database initialized");
 
     // Check for previous scan progress
@@ -85,7 +79,7 @@ async fn main() -> Result<()> {
                     let start_time = std::time::Instant::now();
                     
                     // Pipeline Channel
-                    let (tx, rx) = tokio::sync::mpsc::channel(2000);
+                    let (tx, mut rx) = tokio::sync::mpsc::channel(2000);
                     
                     // Producer Task
                     let args_clone = args.clone();
@@ -125,7 +119,7 @@ async fn main() -> Result<()> {
                         }
                     } else {
                         // Connect Scan Mode
-                        let scanner = BitmapScanner::new(db.clone(), args.timeout, args.concurrency, current_round);
+                        let scanner = ConScanner::new(db.clone(), args.timeout, args.concurrency, current_round);
                         scanner.run_pipeline(rx, ports.clone(), move |total_scanned| {
                             if total_scanned % 1000 == 0 {
                                 let elapsed = start_time.elapsed().as_secs_f64();
@@ -144,7 +138,7 @@ async fn main() -> Result<()> {
                             while rx.recv().await.is_some() {} 
                             return Err(anyhow::anyhow!("SYN scan feature disabled"));
                         }
-                        let scanner = BitmapScanner::new(db.clone(), args.timeout, args.concurrency, current_round);
+                        let scanner = ConScanner::new(db.clone(), args.timeout, args.concurrency, current_round);
                         scanner.run_pipeline(rx, ports.clone(), move |total_scanned| {
                             if total_scanned % 1000 == 0 {
                                 let elapsed = start_time.elapsed().as_secs_f64();

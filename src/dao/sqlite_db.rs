@@ -3,14 +3,14 @@ use anyhow::Result;
 use rusqlite::{Connection, params};
 use std::sync::{Arc, Mutex};
 use chrono::Utc;
-use crate::bitmap::{PortBitmap, ipv4_to_index};
+use crate::model::{PortBitmap, ipv4_to_index};
 
 #[derive(Clone)]
-pub struct BitmapDatabase {
+pub struct SqliteDB {
     conn: Arc<Mutex<Connection>>,
 }
 
-impl BitmapDatabase {
+impl SqliteDB {
     pub fn new(db_path: &str) -> Result<Self> {
         let conn = Connection::open(db_path)?;
         
@@ -62,7 +62,7 @@ impl BitmapDatabase {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
 
-        Ok(BitmapDatabase {
+        Ok(SqliteDB {
             conn: Arc::new(Mutex::new(conn)),
         })
     }

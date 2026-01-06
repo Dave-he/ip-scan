@@ -4,9 +4,9 @@ use tokio::net::TcpStream;
 use tokio::time::timeout;
 use anyhow::Result;
 use tracing::{debug, info, error};
-use crate::bitmap_db::BitmapDatabase;
-use crate::metrics::ScanMetrics;
-use crate::rate_limiter::RateLimiter;
+use crate::dao::SqliteDB;
+use crate::model::ScanMetrics;
+use super::RateLimiter;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -14,8 +14,8 @@ use tokio::task::JoinSet;
 
 const MAX_RETRIES: usize = 3;
 
-pub struct BitmapScanner {
-    db: BitmapDatabase,
+pub struct ConScanner {
+    db: SqliteDB,
     timeout_ms: u64,
     concurrent_limit: usize,
     scan_round: i64,
@@ -25,8 +25,8 @@ pub struct BitmapScanner {
     result_tx: mpsc::Sender<(String, u16, bool)>,
 }
 
-impl BitmapScanner {
-    pub fn new(db: BitmapDatabase, timeout_ms: u64, concurrent_limit: usize, scan_round: i64) -> Self {
+impl ConScanner {
+    pub fn new(db: SqliteDB, timeout_ms: u64, concurrent_limit: usize, scan_round: i64) -> Self {
         // Rate limiter: max 1000 requests per second
         let rate_limiter = RateLimiter::new(1000, Duration::from_secs(1));
         
@@ -39,7 +39,7 @@ impl BitmapScanner {
             Self::run_db_writer(rx, db_clone, scan_round).await;
         });
 
-        BitmapScanner {
+        ConScanner {
             db,
             timeout_ms,
             concurrent_limit,
@@ -51,7 +51,7 @@ impl BitmapScanner {
         }
     }
 
-    async fn run_db_writer(mut rx: mpsc::Receiver<(String, u16, bool)>, db: BitmapDatabase, round: i64) {
+    async fn run_db_writer(mut rx: mpsc::Receiver<(String, u16, bool)>, db: SqliteDB, round: i64) {
         let mut buffer = Vec::with_capacity(5000);
         let mut last_flush = Instant::now();
         const FLUSH_INTERVAL: Duration = Duration::from_secs(1);
@@ -65,7 +65,7 @@ impl BitmapScanner {
                 Ok(Some(item)) => {
                     buffer.push(item);
                     if buffer.len() >= BATCH_SIZE {
-                        if let Err(e) = db.bulk_update_port_status(buffer.drain(..).collect(), round) {
+                        if let Err(e) = db.bulk_update_port_status(std::mem::take(&mut buffer), round) {
                             error!("Failed to bulk update port status: {}", e);
                         }
                         last_flush = Instant::now();
@@ -79,7 +79,7 @@ impl BitmapScanner {
 
             // Check if we need to flush based on time
             if !buffer.is_empty() && last_flush.elapsed() >= FLUSH_INTERVAL {
-                if let Err(e) = db.bulk_update_port_status(buffer.drain(..).collect(), round) {
+                if let Err(e) = db.bulk_update_port_status(std::mem::take(&mut buffer), round) {
                     error!("Failed to bulk update port status (timer): {}", e);
                 }
                 last_flush = Instant::now();
@@ -174,7 +174,7 @@ impl BitmapScanner {
 
         // Batch progress saving: only save every 100 IPs
         let count = self.scanned_count.fetch_add(1, Ordering::Relaxed) + 1;
-        if count % 100 == 0 {
+        if count.is_multiple_of(100) {
             if let Err(e) = self.db.save_progress(&ip_str, ip_type, self.scan_round) {
                 error!(error = %e, "Failed to save progress");
             }
@@ -184,7 +184,7 @@ impl BitmapScanner {
     }
 
     fn clone_scanner(&self) -> Self {
-        BitmapScanner {
+        ConScanner {
             db: self.db.clone(),
             timeout_ms: self.timeout_ms,
             concurrent_limit: self.concurrent_limit,
@@ -247,10 +247,8 @@ impl BitmapScanner {
                         break;
                     }
                     // If channel closed but tasks running, just wait for tasks
-                     if let Some(res) = join_set.join_next().await {
-                         if let Err(e) = res {
+                     if let Some(Err(e)) = join_set.join_next().await {
                             error!("Task join error: {}", e);
-                        }
                      }
                 }
             }
@@ -301,8 +299,8 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         
         // Create scanner
-        let db = BitmapDatabase::new(":memory:").unwrap();
-        let scanner = BitmapScanner::new(db, 500, 10, 1);
+        let db = SqliteDB::new(":memory:").unwrap();
+        let scanner = ConScanner::new(db, 500, 10, 1);
         
         // Spawn server accept loop
         tokio::spawn(async move {
@@ -339,8 +337,8 @@ mod tests {
         let closed_port = closed_listener.local_addr().unwrap().port();
         drop(closed_listener);
 
-        let db = BitmapDatabase::new(":memory:").unwrap();
-        let scanner = BitmapScanner::new(db.clone(), 500, 10, 1);
+        let db = SqliteDB::new(":memory:").unwrap();
+        let scanner = ConScanner::new(db.clone(), 500, 10, 1);
         let ip: IpAddr = "127.0.0.1".parse().unwrap();
         
         let ports = vec![port, closed_port];
