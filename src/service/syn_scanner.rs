@@ -1,8 +1,8 @@
 use anyhow::{anyhow, Result};
-use pnet::packet::ip::IpNextHeaderProtocols;
-use pnet::packet::tcp::{ipv4_checksum, MutableTcpPacket, TcpFlags, TcpPacket};
-use pnet::packet::Packet;
-use pnet::transport::{self, TransportChannelType, TransportProtocol};
+use pnet_packet::ip::IpNextHeaderProtocols;
+use pnet_packet::tcp::{ipv4_checksum, MutableTcpPacket, TcpFlags, TcpPacket};
+use pnet_packet::Packet;
+use pnet_transport::{self as transport, TransportChannelType, TransportProtocol};
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -15,8 +15,8 @@ use crate::model::ScanMetrics;
 use std::thread;
 use tokio::time::timeout;
 
-use pnet::datalink;
 use rand::Rng;
+use pnet_datalink as datalink;
 
 pub struct SynScanner {
     tx: Arc<Mutex<transport::TransportSender>>,
@@ -25,7 +25,15 @@ pub struct SynScanner {
 }
 
 impl SynScanner {
-    pub fn new(db: SqliteDB, scan_round: i64) -> Result<Self> {
+    pub fn new(
+        db: SqliteDB,
+        scan_round: i64,
+        result_buffer: usize,
+        db_batch_size: usize,
+        flush_interval_ms: u64,
+        max_rate: u64,
+        rate_window_secs: u64,
+    ) -> Result<Self> {
         let protocol =
             TransportChannelType::Layer4(TransportProtocol::Ipv4(IpNextHeaderProtocols::Tcp));
         let (tx, mut rx) = match transport::transport_channel(4096, protocol) {
@@ -39,23 +47,23 @@ impl SynScanner {
         };
 
         let metrics = ScanMetrics::new();
-        let rate_limiter = RateLimiter::new(100000, Duration::from_secs(1));
+        let rate_limiter =
+            RateLimiter::new(max_rate as usize, Duration::from_secs(rate_window_secs));
 
-        let (result_tx, mut result_rx) = mpsc::channel(10000);
+        let (result_tx, mut result_rx) = mpsc::channel(result_buffer);
         let db_clone = db.clone();
 
         tokio::spawn(async move {
-            let mut buffer = Vec::with_capacity(5000);
+            let mut buffer = Vec::with_capacity(db_batch_size);
             let mut last_flush = Instant::now();
-            const FLUSH_INTERVAL: Duration = Duration::from_secs(1);
-            const BATCH_SIZE: usize = 2000;
+            let flush_interval = Duration::from_millis(flush_interval_ms);
 
             loop {
                 let result = timeout(Duration::from_millis(100), result_rx.recv()).await;
                 match result {
                     Ok(Some(item)) => {
                         buffer.push(item);
-                        if buffer.len() >= BATCH_SIZE {
+                        if buffer.len() >= db_batch_size {
                             if let Err(e) = db_clone
                                 .bulk_update_port_status(std::mem::take(&mut buffer), scan_round)
                             {
@@ -68,7 +76,7 @@ impl SynScanner {
                     Err(_) => {}
                 }
 
-                if !buffer.is_empty() && last_flush.elapsed() >= FLUSH_INTERVAL {
+                if !buffer.is_empty() && last_flush.elapsed() >= flush_interval {
                     if let Err(e) =
                         db_clone.bulk_update_port_status(std::mem::take(&mut buffer), scan_round)
                     {
@@ -126,10 +134,10 @@ impl SynScanner {
             for ip_net in iface.ips {
                 if let IpAddr::V4(ipv4_addr) = ip_net.ip() {
                     if ip_net.contains(IpAddr::V4(dst_ip)) {
-                        return Some(ipv4_addr); // Perfect match
+                        return Some(ipv4_addr);
                     }
                     if !ipv4_addr.is_loopback() && best_if_ip.is_none() {
-                        best_if_ip = Some(ipv4_addr); // Fallback
+                        best_if_ip = Some(ipv4_addr);
                     }
                 }
             }

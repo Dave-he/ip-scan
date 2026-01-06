@@ -102,6 +102,34 @@ pub struct Args {
     /// Run only scanner (no API)
     #[arg(long, env = "SCAN_NO_API", action = clap::ArgAction::SetTrue)]
     pub no_api: bool,
+    /// MaxMind GeoIP database path (optional)
+    #[arg(long, env = "SCAN_GEOIP_DB")]
+    pub geoip_db: Option<String>,
+
+    /// Disable Geolocation lookup
+    #[arg(long, env = "SCAN_NO_GEO", action = clap::ArgAction::SetTrue)]
+    pub no_geo: bool,
+
+    #[arg(long, env = "SCAN_WORKER_THREADS")]
+    pub worker_threads: Option<usize>,
+
+    #[arg(long, env = "SCAN_PIPELINE_BUFFER", default_value = "2000")]
+    pub pipeline_buffer: usize,
+
+    #[arg(long, env = "SCAN_RESULT_BUFFER", default_value = "10000")]
+    pub result_buffer: usize,
+
+    #[arg(long, env = "SCAN_DB_BATCH_SIZE", default_value = "2000")]
+    pub db_batch_size: usize,
+
+    #[arg(long, env = "SCAN_FLUSH_INTERVAL_MS", default_value = "1000")]
+    pub flush_interval_ms: u64,
+
+    #[arg(long, env = "SCAN_MAX_RATE", default_value = "100000")]
+    pub max_rate: u64,
+
+    #[arg(long, env = "SCAN_RATE_WINDOW_S", default_value = "1")]
+    pub rate_window_secs: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -139,6 +167,23 @@ pub struct ScanConfig {
     pub skip_private: bool,
     #[serde(default)]
     pub syn: bool,
+    pub geoip_db: Option<String>,
+    #[serde(default)]
+    pub no_geo: bool,
+
+    pub worker_threads: Option<usize>,
+    #[serde(default = "default_pipeline_buffer")]
+    pub pipeline_buffer: usize,
+    #[serde(default = "default_result_buffer")]
+    pub result_buffer: usize,
+    #[serde(default = "default_db_batch_size")]
+    pub db_batch_size: usize,
+    #[serde(default = "default_flush_interval_ms")]
+    pub flush_interval_ms: u64,
+    #[serde(default = "default_max_rate")]
+    pub max_rate: u64,
+    #[serde(default = "default_window_duration")]
+    pub rate_window_secs: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -167,6 +212,15 @@ impl Default for ScanConfig {
             only_store_open: default_only_store_open(),
             skip_private: default_skip_private(),
             syn: false,
+            geoip_db: None,
+            no_geo: false,
+            worker_threads: None,
+            pipeline_buffer: default_pipeline_buffer(),
+            result_buffer: default_result_buffer(),
+            db_batch_size: default_db_batch_size(),
+            flush_interval_ms: default_flush_interval_ms(),
+            max_rate: default_max_rate(),
+            rate_window_secs: default_window_duration(),
         }
     }
 }
@@ -218,6 +272,22 @@ fn default_max_rate() -> u64 {
 
 fn default_window_duration() -> u64 {
     1
+}
+
+fn default_pipeline_buffer() -> usize {
+    2000
+}
+
+fn default_result_buffer() -> usize {
+    10000
+}
+
+fn default_db_batch_size() -> usize {
+    2000
+}
+
+fn default_flush_interval_ms() -> u64 {
+    1000
 }
 
 impl Args {
@@ -280,6 +350,33 @@ impl Args {
             }
             if !self.syn {
                 self.syn = config.scan.syn;
+            }
+            if self.geoip_db.is_none() {
+                self.geoip_db = config.scan.geoip_db;
+            }
+            if !self.no_geo {
+                self.no_geo = config.scan.no_geo;
+            }
+            if self.worker_threads.is_none() {
+                self.worker_threads = config.scan.worker_threads;
+            }
+            if self.pipeline_buffer == default_pipeline_buffer() {
+                self.pipeline_buffer = config.scan.pipeline_buffer;
+            }
+            if self.result_buffer == default_result_buffer() {
+                self.result_buffer = config.scan.result_buffer;
+            }
+            if self.db_batch_size == default_db_batch_size() {
+                self.db_batch_size = config.scan.db_batch_size;
+            }
+            if self.flush_interval_ms == default_flush_interval_ms() {
+                self.flush_interval_ms = config.scan.flush_interval_ms;
+            }
+            if self.max_rate == default_max_rate() {
+                self.max_rate = config.scan.max_rate;
+            }
+            if self.rate_window_secs == default_window_duration() {
+                self.rate_window_secs = config.scan.rate_window_secs;
             }
         } else {
             // Apply defaults when no config file is found

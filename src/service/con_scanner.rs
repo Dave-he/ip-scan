@@ -26,17 +26,25 @@ pub struct ConScanner {
 }
 
 impl ConScanner {
-    pub fn new(db: SqliteDB, timeout_ms: u64, concurrent_limit: usize, scan_round: i64) -> Self {
-        // Rate limiter: max 1000 requests per second
-        let rate_limiter = RateLimiter::new(1000, Duration::from_secs(1));
+    pub fn new(
+        db: SqliteDB,
+        timeout_ms: u64,
+        concurrent_limit: usize,
+        scan_round: i64,
+        result_buffer: usize,
+        db_batch_size: usize,
+        flush_interval_ms: u64,
+        max_rate: u64,
+        rate_window_secs: u64,
+    ) -> Self {
+        let rate_limiter =
+            RateLimiter::new(max_rate as usize, Duration::from_secs(rate_window_secs));
 
-        // Channel for batch database writing
-        let (tx, rx) = mpsc::channel(10000);
+        let (tx, rx) = mpsc::channel(result_buffer);
 
-        // Spawn background writer task
         let db_clone = db.clone();
         tokio::spawn(async move {
-            Self::run_db_writer(rx, db_clone, scan_round).await;
+            Self::run_db_writer(rx, db_clone, scan_round, db_batch_size, flush_interval_ms).await;
         });
 
         ConScanner {
@@ -51,20 +59,24 @@ impl ConScanner {
         }
     }
 
-    async fn run_db_writer(mut rx: mpsc::Receiver<(String, u16, bool)>, db: SqliteDB, round: i64) {
-        let mut buffer = Vec::with_capacity(5000);
+    async fn run_db_writer(
+        mut rx: mpsc::Receiver<(String, u16, bool)>,
+        db: SqliteDB,
+        round: i64,
+        batch_size: usize,
+        flush_interval_ms: u64,
+    ) {
+        let mut buffer = Vec::with_capacity(batch_size);
         let mut last_flush = Instant::now();
-        const FLUSH_INTERVAL: Duration = Duration::from_secs(1);
-        const BATCH_SIZE: usize = 2000;
+        let flush_interval = Duration::from_millis(flush_interval_ms);
 
         loop {
-            // Use timeout to ensure we flush periodically even if data comes in slowly
             let result = timeout(Duration::from_millis(100), rx.recv()).await;
 
             match result {
                 Ok(Some(item)) => {
                     buffer.push(item);
-                    if buffer.len() >= BATCH_SIZE {
+                    if buffer.len() >= batch_size {
                         if let Err(e) =
                             db.bulk_update_port_status(std::mem::take(&mut buffer), round)
                         {
@@ -73,14 +85,11 @@ impl ConScanner {
                         last_flush = Instant::now();
                     }
                 }
-                Ok(None) => break, // Channel closed
-                Err(_) => {
-                    // Timeout
-                }
+                Ok(None) => break,
+                Err(_) => {}
             }
 
-            // Check if we need to flush based on time
-            if !buffer.is_empty() && last_flush.elapsed() >= FLUSH_INTERVAL {
+            if !buffer.is_empty() && last_flush.elapsed() >= flush_interval {
                 if let Err(e) = db.bulk_update_port_status(std::mem::take(&mut buffer), round) {
                     error!("Failed to bulk update port status (timer): {}", e);
                 }
@@ -88,7 +97,6 @@ impl ConScanner {
             }
         }
 
-        // Final flush
         if !buffer.is_empty() {
             if let Err(e) = db.bulk_update_port_status(buffer, round) {
                 error!("Failed to final bulk update port status: {}", e);

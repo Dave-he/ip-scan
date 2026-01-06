@@ -10,10 +10,24 @@ use tracing::{error, info, Level};
 
 use cli::Args;
 use dao::SqliteDB;
+use service::GeoService;
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     let args = Args::parse().merge_with_config()?;
+    let worker_threads = args.worker_threads.unwrap_or_else(|| {
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4)
+    });
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(worker_threads)
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async_main(args))
+}
+
+async fn async_main(args: Args) -> Result<()> {
 
     // Initialize logging
     tracing_subscriber::fmt()
@@ -68,6 +82,15 @@ async fn run_scanner(args: &Args) -> Result<()> {
     // Initialize bitmap database
     let db = SqliteDB::new(&args.database)?;
     info!("Database initialized");
+
+    // Initialize GeoService
+    let geo_service = if !args.no_geo {
+        info!("Initializing GeoIP service...");
+        Some(GeoService::new(args.geoip_db.as_deref()))
+    } else {
+        info!("GeoIP lookup disabled");
+        None
+    };
 
     // Run scanner
     run_scanner_logic(db, args).await
@@ -204,8 +227,7 @@ async fn run_scanner_logic(db: SqliteDB, args: &Args) -> Result<()> {
                 Ok(ip_range) => {
                     let start_time = std::time::Instant::now();
 
-                    // Pipeline Channel
-                    let (tx, rx) = tokio::sync::mpsc::channel(2000);
+                    let (tx, rx) = tokio::sync::mpsc::channel(args.pipeline_buffer);
 
                     // Producer Task
                     let args_clone = args.clone();
@@ -232,7 +254,7 @@ async fn run_scanner_logic(db: SqliteDB, args: &Args) -> Result<()> {
 
                     let metrics = if args.syn {
                         // SYN Scan Mode
-                        match SynScanner::new(db.clone(), current_round) {
+                        match SynScanner::new(db.clone(), current_round, args.result_buffer, args.db_batch_size, args.flush_interval_ms, args.max_rate, args.rate_window_secs) {
                             Ok(scanner) => {
                                 scanner
                                     .run_pipeline(rx, ports.clone(), move |total_scanned| {
@@ -260,6 +282,11 @@ async fn run_scanner_logic(db: SqliteDB, args: &Args) -> Result<()> {
                             args.timeout,
                             args.concurrency,
                             current_round,
+                            args.result_buffer,
+                            args.db_batch_size,
+                            args.flush_interval_ms,
+                            args.max_rate,
+                            args.rate_window_secs,
                         );
                         scanner
                             .run_pipeline(rx, ports.clone(), move |total_scanned| {
@@ -289,6 +316,40 @@ async fn run_scanner_logic(db: SqliteDB, args: &Args) -> Result<()> {
                     metrics.print_summary();
                 }
                 Err(e) => error!("Failed to create IPv4 range: {}", e),
+            }
+        }
+
+        // Geolocation Enrichment
+        if let Some(geo) = &geo_service {
+            // Process in batches to avoid holding up the loop too long, 
+            // but enough to catch up with scanning speed eventually.
+            // Since we scan fast, we might accumulate many IPs. 
+            // Let's try to process up to 1000 per round for now.
+            info!("Starting geolocation enrichment...");
+            match db.get_ips_missing_geo(1000) {
+                Ok(ips_to_enrich) => {
+                    if !ips_to_enrich.is_empty() {
+                        info!("Found {} IPs missing geolocation info", ips_to_enrich.len());
+                        let mut enriched_count = 0;
+                        
+                        for ip in ips_to_enrich {
+                            // Add a small delay to respect API rate limits if using API
+                            // Ideally this should be handled inside GeoService or RateLimiter
+                            match geo.lookup(&ip).await {
+                                Ok(info) => {
+                                    if let Err(e) = db.save_ip_geo_info(&info) {
+                                        error!("Failed to save geo info for {}: {}", ip, e);
+                                    } else {
+                                        enriched_count += 1;
+                                    }
+                                }
+                                Err(e) => error!("Failed to lookup geo info for {}: {}", ip, e),
+                            }
+                        }
+                        info!("Enriched {} IPs with geolocation data", enriched_count);
+                    }
+                }
+                Err(e) => error!("Failed to fetch IPs for enrichment: {}", e),
             }
         }
 

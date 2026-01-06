@@ -1,0 +1,22 @@
+{
+    "ipv4": {
+        "ARIN": "whois.arin.net",
+        "RIPE": "whois.ripe.net",
+        "APNIC": "whois.apnic.net",
+        "LACNIC": "whois.lacnic.net",
+        "AFRINIC": "whois.afrinic.net"
+    },
+    "ipv6": {
+        "ARIN": "whois.arin.net",
+        "RIPE": "whois.ripe.net",
+        "APNIC": "whois.apnic.net",
+        "LACNIC": "whois.lacnic.net",
+        "AFRINIC": "whois.afrinic.net"
+    },
+    "tld": {
+        "com": "whois.verisign-grs.com",
+        "net": "whois.verisign-grs.com",
+        "org": "whois.pir.org",
+        "cn": "whois.cnnic.cn"
+    }
+}

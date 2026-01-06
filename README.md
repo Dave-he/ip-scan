@@ -102,6 +102,20 @@ cargo build --release
   --verbose
 ```
 
+## 🪟 Windows 构建（Npcap SDK）
+
+- 安装 Npcap，并在安装时勾选“Install Npcap in WinPcap API-compatible Mode”
+- 下载并解压 Npcap SDK（例如放到 D:\npcap-sdk-1.15）
+- 在 PowerShell 中设置库路径并编译：
+
+```powershell
+$env:LIB = if ($env:LIB) { "$env:LIB;D:\npcap-sdk-1.15\Lib\x64" } else { "D:\npcap-sdk-1.15\Lib\x64" }
+cargo build
+```
+
+- 如果使用 32 位工具链，请改为 `D:\npcap-sdk-1.15\Lib` 路径
+- 以上步骤用于在 Windows 上启用数据链路层支持，以编译包含 SYN 扫描能力的二进制；运行时通过 `--syn` 开启。
+
 ## 📖 使用文档
 
 ### 命令行参数

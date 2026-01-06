@@ -1,7 +1,7 @@
-use crate::model::{ipv4_to_index, PortBitmap};
+use crate::model::{ipv4_to_index, IpGeoInfo, PortBitmap};
 use anyhow::Result;
 use chrono::Utc;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -58,6 +58,21 @@ impl SqliteDB {
             [],
         )?;
 
+        // IP Geolocation table
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS ip_details (
+                ip_address TEXT PRIMARY KEY,
+                country TEXT,
+                region TEXT,
+                city TEXT,
+                isp TEXT,
+                asn TEXT,
+                source TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )",
+            [],
+        )?;
+
         // Optimization: Set WAL mode for better concurrency
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
@@ -65,6 +80,67 @@ impl SqliteDB {
         Ok(SqliteDB {
             conn: Arc::new(Mutex::new(conn)),
         })
+    }
+
+    pub fn save_ip_geo_info(&self, info: &IpGeoInfo) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let timestamp = Utc::now().to_rfc3339();
+
+        conn.execute(
+            "INSERT INTO ip_details (ip_address, country, region, city, isp, asn, source, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(ip_address)
+             DO UPDATE SET country = ?2, region = ?3, city = ?4, isp = ?5, asn = ?6, source = ?7, updated_at = ?8",
+            params![
+                info.ip,
+                info.country,
+                info.region,
+                info.city,
+                info.isp,
+                info.asn,
+                info.source,
+                timestamp
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    pub fn get_ip_geo_info(&self, ip: &str) -> Result<Option<IpGeoInfo>> {
+        let conn = self.conn.lock().unwrap();
+
+        let result = conn.query_row(
+            "SELECT ip_address, country, region, city, isp, asn, source FROM ip_details WHERE ip_address = ?1",
+            [ip],
+            |row| {
+                Ok(IpGeoInfo {
+                    ip: row.get(0)?,
+                    country: row.get(1)?,
+                    region: row.get(2)?,
+                    city: row.get(3)?,
+                    isp: row.get(4)?,
+                    asn: row.get(5)?,
+                    source: row.get(6)?,
+                })
+            },
+        ).optional()?;
+
+        Ok(result)
+    }
+
+    pub fn get_ips_missing_geo(&self, limit: usize) -> Result<Vec<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT ip_address FROM open_ports_detail 
+             WHERE ip_address NOT IN (SELECT ip_address FROM ip_details)
+             LIMIT ?1"
+        )?;
+
+        let ips = stmt.query_map([limit], |row| row.get(0))?
+            .collect::<Result<Vec<String>, _>>()?;
+            
+        Ok(ips)
     }
 
     #[allow(dead_code)]
