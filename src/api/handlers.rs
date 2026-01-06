@@ -285,15 +285,25 @@ pub async fn get_top_ports(
         });
     }
 
+    // Get total count of all open ports first
+    let total_all_ports = match db.get_total_open_ports_count() {
+        Ok(count) => count,
+        Err(e) => {
+            error!("Failed to get total open ports count: {}", e);
+            return HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Failed to retrieve statistics".to_string(),
+                code: Some("DATABASE_ERROR".to_string()),
+            });
+        }
+    };
+
     match db.get_top_ports(limit) {
         Ok(port_stats) => {
-            let total_open_ports: usize = port_stats.iter().map(|(_, count)| count).sum();
-
             let ports: Vec<PortStats> = port_stats
                 .into_iter()
                 .map(|(port, count)| {
-                    let percentage = if total_open_ports > 0 {
-                        (count as f64 / total_open_ports as f64) * 100.0
+                    let percentage = if total_all_ports > 0 {
+                        (count as f64 / total_all_ports as f64) * 100.0
                     } else {
                         0.0
                     };
@@ -308,7 +318,7 @@ pub async fn get_top_ports(
 
             HttpResponse::Ok().json(TopPortsResponse {
                 ports,
-                total_open_ports,
+                total_open_ports: total_all_ports,
             })
         }
         Err(e) => {
@@ -327,7 +337,7 @@ pub async fn get_top_ports(
     path = "/api/v1/scan/start",
     request_body = StartScanRequest,
     responses(
-        (status = 202, description = "Scan started successfully"),
+        (status = 501, description = "Not implemented - use CLI to start scanner"),
         (status = 400, description = "Invalid scan parameters", body = ErrorResponse),
         (status = 409, description = "Scan already in progress", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
@@ -371,32 +381,14 @@ pub async fn start_scan(
         _ => {}
     }
 
-    // Mark scan as running
-    if let Err(e) = db.save_metadata("scan_status", "running") {
-        error!("Failed to update scan status: {}", e);
-        return HttpResponse::InternalServerError().json(ErrorResponse {
-            error: "Failed to start scan".to_string(),
-            code: Some("DATABASE_ERROR".to_string()),
-        });
-    }
-
-    // Generate scan ID
-    let scan_id = format!("scan-{}", chrono::Utc::now().timestamp());
-
-    // Save scan parameters to metadata
-    let _ = db.save_metadata("last_scan_id", &scan_id);
-    let _ = db.save_metadata("last_scan_start_time", &chrono::Utc::now().to_rfc3339());
-
-    let start_ip = request.start_ip.as_deref().unwrap_or("0.0.0.0");
-    let end_ip = request.end_ip.as_deref().unwrap_or("255.255.255.255");
-
-    HttpResponse::Accepted().json(json!({
-        "message": "Scan start request accepted",
-        "scan_id": scan_id,
-        "status": "running",
-        "target": format!("{} - {}", start_ip, end_ip),
-        "ports": request.ports.as_deref().unwrap_or("")
-    }))
+    // Note: This API currently only updates metadata.
+    // Actual scan control requires integration with the scanner process.
+    // For now, this serves as a placeholder for future implementation.
+    
+    HttpResponse::NotImplemented().json(ErrorResponse {
+        error: "Scan control via API is not yet fully implemented. The scanner must be started using command-line arguments in combined mode (--api flag).".to_string(),
+        code: Some("NOT_IMPLEMENTED".to_string()),
+    })
 }
 
 /// Stop the current scan
@@ -410,39 +402,14 @@ pub async fn start_scan(
     ),
     tag = "Scan Control"
 )]
-pub async fn stop_scan(db: web::Data<SqliteDB>) -> impl Responder {
-    // Check if a scan is running
-    match db.get_metadata("scan_status") {
-        Ok(Some(status)) if status == "running" => {
-            // Mark scan as stopped
-            if let Err(e) = db.save_metadata("scan_status", "stopped") {
-                error!("Failed to update scan status: {}", e);
-                return HttpResponse::InternalServerError().json(ErrorResponse {
-                    error: "Failed to stop scan".to_string(),
-                    code: Some("DATABASE_ERROR".to_string()),
-                });
-            }
-
-            // Save stop time
-            let _ = db.save_metadata("last_scan_stop_time", &chrono::Utc::now().to_rfc3339());
-
-            HttpResponse::Ok().json(json!({
-                "message": "Scan stop request accepted",
-                "status": "stopped"
-            }))
-        }
-        Ok(Some(_)) | Ok(None) => HttpResponse::NotFound().json(ErrorResponse {
-            error: "No scan in progress".to_string(),
-            code: Some("NO_SCAN_RUNNING".to_string()),
-        }),
-        Err(e) => {
-            error!("Failed to check scan status: {}", e);
-            HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to check scan status".to_string(),
-                code: Some("DATABASE_ERROR".to_string()),
-            })
-        }
-    }
+pub async fn stop_scan(_db: web::Data<SqliteDB>) -> impl Responder {
+    // Note: This API currently only updates metadata.
+    // Actual scan control requires integration with the scanner process.
+    
+    HttpResponse::NotImplemented().json(ErrorResponse {
+        error: "Scan control via API is not yet fully implemented. The scanner runs independently and must be stopped via process signals (Ctrl+C).".to_string(),
+        code: Some("NOT_IMPLEMENTED".to_string()),
+    })
 }
 
 /// Get current scan status
@@ -536,47 +503,80 @@ pub async fn get_scan_history(db: web::Data<SqliteDB>) -> impl Responder {
     tag = "Export"
 )]
 pub async fn export_csv(db: web::Data<SqliteDB>, query: web::Query<FilterQuery>) -> impl Responder {
-    // Get results with filters
-    match db.get_scan_results(
-        1,
-        100000, // Large page size for export
-        query.ip.as_deref(),
-        query.port,
-        query.round,
-        query.ip_type.as_deref(),
-    ) {
-        Ok((results, _)) => {
-            let mut csv_content =
-                String::from("ip_address,ip_type,port,scan_round,first_seen,last_seen\n");
+    use futures::stream;
+    
+    const BATCH_SIZE: usize = 1000;
+    let db_clone = db.clone();
+    let ip_filter = query.ip.clone();
+    let port_filter = query.port;
+    let round_filter = query.round;
+    let ip_type_filter = query.ip_type.clone();
 
-            for result in results {
-                csv_content.push_str(&format!(
-                    "{},{},{},{},{},{}\n",
-                    result.ip_address,
-                    result.ip_type,
-                    result.port,
-                    result.scan_round,
-                    result.first_seen,
-                    result.last_seen
-                ));
+    let stream = stream::unfold(
+        (1usize, false, true),
+        move |(page, done, is_first)| {
+            let db = db_clone.clone();
+            let ip = ip_filter.clone();
+            let ip_type = ip_type_filter.clone();
+
+            async move {
+                if done {
+                    return None;
+                }
+
+                match db.get_scan_results(
+                    page,
+                    BATCH_SIZE,
+                    ip.as_deref(),
+                    port_filter,
+                    round_filter,
+                    ip_type.as_deref(),
+                ) {
+                    Ok((results, total)) => {
+                        if results.is_empty() {
+                            return None;
+                        }
+
+                        let mut csv_chunk = String::new();
+
+                        if is_first {
+                            csv_chunk.push_str("ip_address,ip_type,port,scan_round,first_seen,last_seen\n");
+                        }
+
+                        for result in results {
+                            csv_chunk.push_str(&format!(
+                                "{},{},{},{},{},{}\n",
+                                result.ip_address,
+                                result.ip_type,
+                                result.port,
+                                result.scan_round,
+                                result.first_seen,
+                                result.last_seen
+                            ));
+                        }
+
+                        let is_done = page * BATCH_SIZE >= total;
+                        Some((
+                            Ok::<_, actix_web::Error>(actix_web::web::Bytes::from(csv_chunk)),
+                            (page + 1, is_done, false),
+                        ))
+                    }
+                    Err(e) => {
+                        error!("Failed to export CSV batch: {}", e);
+                        None
+                    }
+                }
             }
+        },
+    );
 
-            HttpResponse::Ok()
-                .content_type("text/csv")
-                .append_header((
-                    "Content-Disposition",
-                    "attachment; filename=\"scan_results.csv\"",
-                ))
-                .body(csv_content)
-        }
-        Err(e) => {
-            error!("Failed to export CSV: {}", e);
-            HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to export scan results".to_string(),
-                code: Some("DATABASE_ERROR".to_string()),
-            })
-        }
-    }
+    HttpResponse::Ok()
+        .content_type("text/csv")
+        .append_header((
+            "Content-Disposition",
+            "attachment; filename=\"scan_results.csv\"",
+        ))
+        .streaming(stream)
 }
 
 /// Export scan results as JSON
@@ -594,16 +594,28 @@ pub async fn export_json(
     db: web::Data<SqliteDB>,
     query: web::Query<FilterQuery>,
 ) -> impl Responder {
-    // Get results with filters
+    // Limit export to prevent OOM
+    const MAX_EXPORT_SIZE: usize = 50000;
+    
     match db.get_scan_results(
         1,
-        100000, // Large page size for export
+        MAX_EXPORT_SIZE,
         query.ip.as_deref(),
         query.port,
         query.round,
         query.ip_type.as_deref(),
     ) {
-        Ok((results, _)) => {
+        Ok((results, total)) => {
+            if total > MAX_EXPORT_SIZE {
+                return HttpResponse::BadRequest().json(ErrorResponse {
+                    error: format!(
+                        "Export size too large ({} records). Please use filters to reduce the result set to under {} records.",
+                        total, MAX_EXPORT_SIZE
+                    ),
+                    code: Some("EXPORT_SIZE_EXCEEDED".to_string()),
+                });
+            }
+
             let api_results: Vec<ScanResult> = results
                 .into_iter()
                 .map(|r| ScanResult {
@@ -643,16 +655,28 @@ pub async fn export_ndjson(
     db: web::Data<SqliteDB>,
     query: web::Query<FilterQuery>,
 ) -> impl Responder {
-    // Get results with filters
+    // Limit export to prevent OOM
+    const MAX_EXPORT_SIZE: usize = 50000;
+    
     match db.get_scan_results(
         1,
-        100000, // Large page size for export
+        MAX_EXPORT_SIZE,
         query.ip.as_deref(),
         query.port,
         query.round,
         query.ip_type.as_deref(),
     ) {
-        Ok((results, _)) => {
+        Ok((results, total)) => {
+            if total > MAX_EXPORT_SIZE {
+                return HttpResponse::BadRequest().json(ErrorResponse {
+                    error: format!(
+                        "Export size too large ({} records). Please use filters to reduce the result set to under {} records.",
+                        total, MAX_EXPORT_SIZE
+                    ),
+                    code: Some("EXPORT_SIZE_EXCEEDED".to_string()),
+                });
+            }
+
             let mut ndjson_content = String::new();
 
             for result in results {

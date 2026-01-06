@@ -604,6 +604,17 @@ impl SqliteDB {
         Ok(results)
     }
 
+    /// Get total count of all open ports
+    pub fn get_total_open_ports_count(&self) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM open_ports_detail",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(count as usize)
+    }
+
     /// Get last scan timestamp
     pub fn get_last_scan_time(&self) -> Result<Option<String>> {
         let conn = self.conn.lock().unwrap();
