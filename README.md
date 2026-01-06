@@ -465,22 +465,31 @@ ip-scan/
 ├── src/
 │   ├── main.rs              # 主程序入口
 │   ├── cli.rs               # 命令行参数解析
+│   ├── error.rs             # 错误类型定义
+│   ├── api/                 # REST API 模块
+│   │   ├── mod.rs
+│   │   ├── handlers.rs      # API 处理器
+│   │   ├── models.rs        # API 数据模型
+│   │   └── routes.rs        # 路由配置
 │   ├── dao/                 # 数据访问对象
 │   │   ├── mod.rs
-│   │   └── sqlite_db.rs
+│   │   └── sqlite_db.rs     # SQLite 数据库操作
 │   ├── model/               # 数据模型
 │   │   ├── mod.rs
-│   │   ├── bitmap.rs
-│   │   ├── ip_range.rs
-│   │   └── metrics.rs
+│   │   ├── bitmap.rs        # Bitmap 存储模型
+│   │   ├── ip_range.rs      # IP 范围处理
+│   │   ├── metrics.rs       # 性能指标
+│   │   └── geo.rs           # 地理位置信息
 │   └── service/             # 核心业务逻辑
 │       ├── mod.rs
-│       ├── con_scanner.rs   # Connect 扫描器
+│       ├── con_scanner.rs   # TCP Connect 扫描器
 │       ├── syn_scanner.rs   # SYN 扫描器
-│       └── rate_limiter.rs
-├── Cargo.toml               # Rust依赖配置
-├── Dockerfile               # Docker镜像构建
-├── docker-compose.yml       # Docker Compose配置
+│       ├── rate_limiter.rs  # 速率限制器
+│       └── geo_service.rs   # 地理位置服务
+├── Cargo.toml               # Rust 依赖配置
+├── Dockerfile               # Docker 镜像构建
+├── docker-compose.yml       # Docker Compose 配置
+├── config.toml              # 默认配置文件
 └── README.md                # 项目文档
 ```
 
