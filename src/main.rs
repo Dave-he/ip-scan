@@ -88,6 +88,12 @@ async fn main() -> Result<()> {
                             if args_clone.skip_private && Args::is_private_ipv4(&ip.to_string()) {
                                 continue;
                             }
+                            // Skip 0.0.0.0/8 range as it's not routable
+                            if let std::net::IpAddr::V4(ipv4) = ip {
+                                if ipv4.octets()[0] == 0 {
+                                    continue;
+                                }
+                            }
                             if tx.send(ip).await.is_err() {
                                 break;
                             }

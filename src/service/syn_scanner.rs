@@ -1,4 +1,4 @@
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -7,7 +7,7 @@ use pnet::transport::{self, TransportChannelType, TransportProtocol};
 use pnet::packet::tcp::{MutableTcpPacket, TcpPacket, TcpFlags, ipv4_checksum};
 use pnet::packet::ip::IpNextHeaderProtocols;
 use pnet::packet::Packet;
-use tracing::{info, error, debug};
+use tracing::{error, debug};
 
 use std::thread;
 use crate::model::ScanMetrics;
@@ -22,8 +22,6 @@ pub struct SynScanner {
     tx: Arc<Mutex<transport::TransportSender>>,
     rate_limiter: RateLimiter,
     metrics: ScanMetrics,
-    db: SqliteDB,
-    scan_round: i64,
 }
 
 impl SynScanner {
@@ -41,20 +39,69 @@ impl SynScanner {
         let db_clone = db.clone();
         
         tokio::spawn(async move {
-            // ... (DB writer logic remains the same)
+             let mut buffer = Vec::with_capacity(5000);
+             let mut last_flush = Instant::now();
+             const FLUSH_INTERVAL: Duration = Duration::from_secs(1);
+             const BATCH_SIZE: usize = 2000;
+
+             loop {
+                 let result = timeout(Duration::from_millis(100), result_rx.recv()).await;
+                 match result {
+                     Ok(Some(item)) => {
+                         buffer.push(item);
+                         if buffer.len() >= BATCH_SIZE {
+                             if let Err(e) = db_clone.bulk_update_port_status(std::mem::take(&mut buffer), scan_round) {
+                                 error!("Failed to bulk update port status: {}", e);
+                             }
+                             last_flush = Instant::now();
+                         }
+                     }
+                     Ok(None) => break,
+                     Err(_) => {}
+                 }
+
+                 if !buffer.is_empty() && last_flush.elapsed() >= FLUSH_INTERVAL {
+                     if let Err(e) = db_clone.bulk_update_port_status(std::mem::take(&mut buffer), scan_round) {
+                         error!("Failed to bulk update port status (timer): {}", e);
+                     }
+                     last_flush = Instant::now();
+                 }
+             }
+             
+             if !buffer.is_empty() {
+                 let _ = db_clone.bulk_update_port_status(buffer, scan_round);
+             }
         });
 
         let metrics_clone = metrics.clone();
         thread::spawn(move || {
-            // ... (Listener logic remains the same)
+            let mut iter = transport::ipv4_packet_iter(&mut rx);
+            loop {
+                match iter.next() {
+                    Ok((packet, _addr)) => {
+                        if let Some(tcp) = TcpPacket::new(packet.payload()) {
+                            if tcp.get_flags() & (TcpFlags::SYN | TcpFlags::ACK) == (TcpFlags::SYN | TcpFlags::ACK) {
+                                let src_ip = packet.get_source();
+                                let src_port = tcp.get_source();
+                                
+                                metrics_clone.increment_open();
+                                debug!("Found open port: {}:{}", src_ip, src_port);
+
+                                let _ = result_tx.blocking_send((src_ip.to_string(), src_port, true));
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        error!("Raw socket read error: {}", e);
+                    }
+                }
+            }
         });
 
         Ok(SynScanner {
             tx: Arc::new(Mutex::new(tx)),
             rate_limiter,
             metrics,
-            db,
-            scan_round,
         })
     }
 
