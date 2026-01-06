@@ -1028,6 +1028,11 @@ IP数量: 4,294,967,296
 - 添加必要的单元测试
 - 更新相关文档
 
+#### Install additional tools for development
+cargo install cargo-watch    # Auto-rebuild on file changes
+cargo install cargo-audit    # Security vulnerability scanning
+cargo install cargo-deny     # License and dependency checking
+
 ### 提交信息规范
 
 ```
