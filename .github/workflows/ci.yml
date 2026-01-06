@@ -29,8 +29,7 @@ jobs:
       if: runner.os == 'Windows'
       run: |
         # Download and install Npcap
-        Invoke-WebRequest -Uri "https://npcap.com/dist/npcap-1.85.exe
-        " -OutFile "npcap-installer.exe"
+        Invoke-WebRequest -Uri "https://npcap.com/dist/npcap-1.85.exe" -OutFile "npcap-installer.exe"
         Start-Process -FilePath "npcap-installer.exe" -ArgumentList "/S", "/winpcap_mode=yes", "/npf_startup=yes" -Wait
 
     - name: Cache Cargo dependencies
