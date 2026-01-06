@@ -8,9 +8,14 @@ use std::path::PathBuf;
 #[command(version = "0.1.0")]
 #[command(about = "High-performance IPv4/IPv6 port scanner", long_about = None)]
 pub struct Args {
-    /// Configuration file path (TOML format)
-    #[arg(long, env = "SCAN_CONFIG")]
-    pub config: Option<PathBuf>,
+    /// Configuration file path (optional)
+    /// Can be provided with --config flag.
+    #[arg(long, env = "SCAN_CONFIG", value_name = "FILE_PATH")]
+    pub config_flag: Option<PathBuf>,
+
+    /// Configuration file path (optional, positional)
+    #[arg()]
+    pub config_pos: Option<PathBuf>,
 
     /// Start IP address (optional, defaults to full IPv4 range)
     #[arg(short = 's', long, env = "SCAN_START_IP")]
@@ -185,18 +190,30 @@ impl Args {
     /// Merge configuration from file with command line arguments
     /// Command line arguments take precedence over config file
     pub fn merge_with_config(mut self) -> anyhow::Result<Self> {
-        if let Some(config_path) = &self.config {
-            let config_content = std::fs::read_to_string(config_path)?;
+        let config_path = self.config_flag.clone().or(self.config_pos.clone());
+
+        let final_config_path = if let Some(path) = config_path {
+            Some(path)
+        } else {
+            let current_dir_config = PathBuf::from("config.toml");
+            if current_dir_config.exists() {
+                Some(current_dir_config)
+            } else {
+                None
+            }
+        };
+
+        if let Some(path) = final_config_path {
+            let config_content = std::fs::read_to_string(path)?;
             let config: Config = toml::from_str(&config_content)?;
 
-            // Only use config file values if CLI args are not provided
+            // Merge logic remains the same
             if self.start_ip.is_none() {
                 self.start_ip = config.scan.start_ip;
             }
             if self.end_ip.is_none() {
                 self.end_ip = config.scan.end_ip;
             }
-            // For ports, check if it's the default value
             if self.ports == default_ports() {
                 self.ports = config.scan.ports;
             }
@@ -209,11 +226,9 @@ impl Args {
             if self.database == default_database() {
                 self.database = config.scan.database;
             }
-            // For boolean flags, config file provides defaults when flags are not set
             if !self.verbose {
                 self.verbose = config.scan.verbose;
             }
-            // Use config file values as defaults for boolean flags
             if !self.loop_mode {
                 self.loop_mode = config.scan.loop_mode;
             }
@@ -233,7 +248,7 @@ impl Args {
                 self.syn = config.scan.syn;
             }
         } else {
-            // Apply defaults when no config file is provided
+            // Apply defaults when no config file is found
             if !self.loop_mode {
                 self.loop_mode = default_loop_mode();
             }
@@ -246,7 +261,6 @@ impl Args {
             if !self.skip_private {
                 self.skip_private = default_skip_private();
             }
-            // syn defaults to false
         }
         Ok(self)
     }

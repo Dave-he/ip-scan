@@ -10,3 +10,4 @@
 .trae/
 
 *.db-journal
+scan_results.db*
