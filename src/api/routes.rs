@@ -81,6 +81,7 @@ pub fn config_export_routes(cfg: &mut web::ServiceConfig) {
             models::PaginationQuery,
             models::FilterQuery,
             models::ResultsQuery,
+            models::TopPortsQuery,
             models::StartScanRequest,
             models::ExportFormat,
         )

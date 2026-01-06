@@ -274,9 +274,9 @@ pub async fn get_stats(db: web::Data<SqliteDB>) -> impl Responder {
 )]
 pub async fn get_top_ports(
     db: web::Data<SqliteDB>,
-    limit: web::Query<Option<usize>>,
+    query: web::Query<TopPortsQuery>,
 ) -> impl Responder {
-    let limit = limit.into_inner().unwrap_or(10);
+    let limit = query.limit.unwrap_or(10);
 
     if limit == 0 || limit > 100 {
         return HttpResponse::BadRequest().json(ErrorResponse {

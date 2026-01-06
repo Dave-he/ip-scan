@@ -2,8 +2,41 @@
 //!
 //! This module defines the data structures used in API requests and responses.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use utoipa::{IntoParams, ToSchema};
+
+/// Helper function to deserialize numbers from strings
+fn deserialize_number_from_string<'de, D>(deserializer: D) -> Result<usize, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let s = String::deserialize(deserializer)?;
+    s.parse::<usize>().map_err(serde::de::Error::custom)
+}
+
+/// Helper function to deserialize optional u16 from strings
+fn deserialize_optional_u16_from_string<'de, D>(deserializer: D) -> Result<Option<u16>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let s: Option<String> = Option::deserialize(deserializer)?;
+    match s {
+        Some(s) => s.parse::<u16>().map(Some).map_err(serde::de::Error::custom),
+        None => Ok(None),
+    }
+}
+
+/// Helper function to deserialize optional i64 from strings
+fn deserialize_optional_i64_from_string<'de, D>(deserializer: D) -> Result<Option<i64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let s: Option<String> = Option::deserialize(deserializer)?;
+    match s {
+        Some(s) => s.parse::<i64>().map(Some).map_err(serde::de::Error::custom),
+        None => Ok(None),
+    }
+}
 
 /// Scan result for a specific IP and port
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
@@ -102,11 +135,11 @@ pub struct ErrorResponse {
 #[derive(Debug, Deserialize, ToSchema, IntoParams)]
 pub struct PaginationQuery {
     /// Page number (1-indexed, default: 1)
-    #[serde(default = "default_page")]
+    #[serde(default = "default_page", deserialize_with = "deserialize_number_from_string")]
     pub page: usize,
 
     /// Page size (default: 50, max: 500)
-    #[serde(default = "default_page_size")]
+    #[serde(default = "default_page_size", deserialize_with = "deserialize_number_from_string")]
     pub page_size: usize,
 }
 
@@ -118,11 +151,11 @@ pub struct FilterQuery {
     pub ip: Option<String>,
 
     /// Filter by port number
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_optional_u16_from_string")]
     pub port: Option<u16>,
 
     /// Filter by scan round
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_optional_i64_from_string")]
     pub round: Option<i64>,
 
     /// Filter by IP type (IPv4 or IPv6)
@@ -138,6 +171,14 @@ pub struct ResultsQuery {
 
     #[serde(flatten)]
     pub filter: FilterQuery,
+}
+
+/// Query parameters for top ports
+#[derive(Debug, Deserialize, ToSchema, IntoParams)]
+pub struct TopPortsQuery {
+    /// Number of top ports to return (default: 10, max: 100)
+    #[serde(default)]
+    pub limit: Option<usize>,
 }
 
 /// Start scan request
