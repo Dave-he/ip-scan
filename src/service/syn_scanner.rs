@@ -1,18 +1,18 @@
+use anyhow::{anyhow, Result};
+use pnet::packet::ip::IpNextHeaderProtocols;
+use pnet::packet::tcp::{ipv4_checksum, MutableTcpPacket, TcpFlags, TcpPacket};
+use pnet::packet::Packet;
+use pnet::transport::{self, TransportChannelType, TransportProtocol};
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
-use anyhow::{Result, anyhow};
-use pnet::transport::{self, TransportChannelType, TransportProtocol};
-use pnet::packet::tcp::{MutableTcpPacket, TcpPacket, TcpFlags, ipv4_checksum};
-use pnet::packet::ip::IpNextHeaderProtocols;
-use pnet::packet::Packet;
-use tracing::{error, debug};
+use tracing::{debug, error};
 
-use std::thread;
-use crate::model::ScanMetrics;
 use super::RateLimiter;
 use crate::dao::SqliteDB;
+use crate::model::ScanMetrics;
+use std::thread;
 use tokio::time::timeout;
 
 use pnet::datalink;
@@ -26,10 +26,16 @@ pub struct SynScanner {
 
 impl SynScanner {
     pub fn new(db: SqliteDB, scan_round: i64) -> Result<Self> {
-        let protocol = TransportChannelType::Layer4(TransportProtocol::Ipv4(IpNextHeaderProtocols::Tcp));
+        let protocol =
+            TransportChannelType::Layer4(TransportProtocol::Ipv4(IpNextHeaderProtocols::Tcp));
         let (tx, mut rx) = match transport::transport_channel(4096, protocol) {
             Ok((tx, rx)) => (tx, rx),
-            Err(e) => return Err(anyhow!("Failed to create raw socket (Root/Admin required?): {}", e)),
+            Err(e) => {
+                return Err(anyhow!(
+                    "Failed to create raw socket (Root/Admin required?): {}",
+                    e
+                ))
+            }
         };
 
         let metrics = ScanMetrics::new();
@@ -37,40 +43,44 @@ impl SynScanner {
 
         let (result_tx, mut result_rx) = mpsc::channel(10000);
         let db_clone = db.clone();
-        
+
         tokio::spawn(async move {
-             let mut buffer = Vec::with_capacity(5000);
-             let mut last_flush = Instant::now();
-             const FLUSH_INTERVAL: Duration = Duration::from_secs(1);
-             const BATCH_SIZE: usize = 2000;
+            let mut buffer = Vec::with_capacity(5000);
+            let mut last_flush = Instant::now();
+            const FLUSH_INTERVAL: Duration = Duration::from_secs(1);
+            const BATCH_SIZE: usize = 2000;
 
-             loop {
-                 let result = timeout(Duration::from_millis(100), result_rx.recv()).await;
-                 match result {
-                     Ok(Some(item)) => {
-                         buffer.push(item);
-                         if buffer.len() >= BATCH_SIZE {
-                             if let Err(e) = db_clone.bulk_update_port_status(std::mem::take(&mut buffer), scan_round) {
-                                 error!("Failed to bulk update port status: {}", e);
-                             }
-                             last_flush = Instant::now();
-                         }
-                     }
-                     Ok(None) => break,
-                     Err(_) => {}
-                 }
+            loop {
+                let result = timeout(Duration::from_millis(100), result_rx.recv()).await;
+                match result {
+                    Ok(Some(item)) => {
+                        buffer.push(item);
+                        if buffer.len() >= BATCH_SIZE {
+                            if let Err(e) = db_clone
+                                .bulk_update_port_status(std::mem::take(&mut buffer), scan_round)
+                            {
+                                error!("Failed to bulk update port status: {}", e);
+                            }
+                            last_flush = Instant::now();
+                        }
+                    }
+                    Ok(None) => break,
+                    Err(_) => {}
+                }
 
-                 if !buffer.is_empty() && last_flush.elapsed() >= FLUSH_INTERVAL {
-                     if let Err(e) = db_clone.bulk_update_port_status(std::mem::take(&mut buffer), scan_round) {
-                         error!("Failed to bulk update port status (timer): {}", e);
-                     }
-                     last_flush = Instant::now();
-                 }
-             }
-             
-             if !buffer.is_empty() {
-                 let _ = db_clone.bulk_update_port_status(buffer, scan_round);
-             }
+                if !buffer.is_empty() && last_flush.elapsed() >= FLUSH_INTERVAL {
+                    if let Err(e) =
+                        db_clone.bulk_update_port_status(std::mem::take(&mut buffer), scan_round)
+                    {
+                        error!("Failed to bulk update port status (timer): {}", e);
+                    }
+                    last_flush = Instant::now();
+                }
+            }
+
+            if !buffer.is_empty() {
+                let _ = db_clone.bulk_update_port_status(buffer, scan_round);
+            }
         });
 
         let metrics_clone = metrics.clone();
@@ -80,14 +90,17 @@ impl SynScanner {
                 match iter.next() {
                     Ok((packet, _addr)) => {
                         if let Some(tcp) = TcpPacket::new(packet.payload()) {
-                            if tcp.get_flags() & (TcpFlags::SYN | TcpFlags::ACK) == (TcpFlags::SYN | TcpFlags::ACK) {
+                            if tcp.get_flags() & (TcpFlags::SYN | TcpFlags::ACK)
+                                == (TcpFlags::SYN | TcpFlags::ACK)
+                            {
                                 let src_ip = packet.get_source();
                                 let src_port = tcp.get_source();
-                                
+
                                 metrics_clone.increment_open();
                                 debug!("Found open port: {}:{}", src_ip, src_port);
 
-                                let _ = result_tx.blocking_send((src_ip.to_string(), src_port, true));
+                                let _ =
+                                    result_tx.blocking_send((src_ip.to_string(), src_port, true));
                             }
                         }
                     }
@@ -125,15 +138,20 @@ impl SynScanner {
     }
 
     pub fn send_syn(&self, dst_ip: Ipv4Addr, dst_port: u16) -> Result<()> {
-        let src_ip = Self::find_source_ip(dst_ip)
-            .ok_or_else(|| anyhow!("Could not find suitable source IP for destination {}", dst_ip))?;
-        
+        let src_ip = Self::find_source_ip(dst_ip).ok_or_else(|| {
+            anyhow!(
+                "Could not find suitable source IP for destination {}",
+                dst_ip
+            )
+        })?;
+
         let mut vec = vec![0u8; 20];
-        let mut tcp_packet = MutableTcpPacket::new(&mut vec).ok_or(anyhow!("Failed to create TCP packet"))?;
-        
+        let mut tcp_packet =
+            MutableTcpPacket::new(&mut vec).ok_or(anyhow!("Failed to create TCP packet"))?;
+
         let mut rng = rand::thread_rng();
         let src_port = rng.gen_range(1025..=65535);
-        
+
         tcp_packet.set_source(src_port);
         tcp_packet.set_destination(dst_port);
         tcp_packet.set_sequence(rng.gen());
@@ -142,17 +160,16 @@ impl SynScanner {
         tcp_packet.set_window(64240);
         tcp_packet.set_data_offset(5);
         tcp_packet.set_urgent_ptr(0);
-        
+
         let checksum = ipv4_checksum(&tcp_packet.to_immutable(), &src_ip, &dst_ip);
         tcp_packet.set_checksum(checksum);
 
         let mut tx = self.tx.lock().unwrap();
         tx.send_to(tcp_packet, IpAddr::V4(dst_ip))?;
-        
+
         self.metrics.increment_scanned();
         Ok(())
     }
-
 
     pub async fn run_pipeline(
         &self,
@@ -161,25 +178,25 @@ impl SynScanner {
         progress_callback: impl Fn(usize) + Send + Sync + 'static,
     ) -> Result<()> {
         let mut total_sent = 0;
-        
+
         while let Some(ip) = rx.recv().await {
             if let IpAddr::V4(ipv4) = ip {
                 for port in &ports {
                     // Rate Limit
                     self.rate_limiter.acquire().await;
-                    
+
                     // Send SYN
                     if let Err(e) = self.send_syn(ipv4, *port) {
                         error!(ip = %ipv4, port = port, error = %e, "Failed to send SYN");
                         self.metrics.increment_errors();
                     }
                 }
-                
+
                 total_sent += 1;
                 progress_callback(total_sent);
             }
         }
-        
+
         Ok(())
     }
 

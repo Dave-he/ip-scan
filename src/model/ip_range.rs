@@ -8,15 +8,13 @@ pub struct IpRange {
 
 impl IpRange {
     pub fn new(start: &str, end: &str) -> Result<Self, String> {
-        let start_ip = IpAddr::from_str(start)
-            .map_err(|e| format!("Invalid start IP: {}", e))?;
-        let end_ip = IpAddr::from_str(end)
-            .map_err(|e| format!("Invalid end IP: {}", e))?;
-        
+        let start_ip = IpAddr::from_str(start).map_err(|e| format!("Invalid start IP: {}", e))?;
+        let end_ip = IpAddr::from_str(end).map_err(|e| format!("Invalid end IP: {}", e))?;
+
         if std::mem::discriminant(&start_ip) != std::mem::discriminant(&end_ip) {
             return Err("Start and end IP must be the same version".to_string());
         }
-        
+
         Ok(IpRange {
             start: start_ip,
             end: end_ip,
@@ -104,24 +102,31 @@ pub fn parse_port_range(range: &str) -> Result<Vec<u16>, String> {
         if parts.len() != 2 {
             return Err("Invalid port range format".to_string());
         }
-        
-        let start: u16 = parts[0].parse()
+
+        let start: u16 = parts[0]
+            .parse()
             .map_err(|_| "Invalid start port".to_string())?;
-        let end: u16 = parts[1].parse()
+        let end: u16 = parts[1]
+            .parse()
             .map_err(|_| "Invalid end port".to_string())?;
-        
+
         if start > end {
             return Err("Start port must be less than or equal to end port".to_string());
         }
-        
+
         Ok((start..=end).collect())
     } else if range.contains(',') {
-        range.split(',')
-            .map(|s| s.trim().parse::<u16>()
-                .map_err(|_| format!("Invalid port: {}", s)))
+        range
+            .split(',')
+            .map(|s| {
+                s.trim()
+                    .parse::<u16>()
+                    .map_err(|_| format!("Invalid port: {}", s))
+            })
             .collect()
     } else {
-        let port: u16 = range.parse()
+        let port: u16 = range
+            .parse()
             .map_err(|_| "Invalid port number".to_string())?;
         Ok(vec![port])
     }

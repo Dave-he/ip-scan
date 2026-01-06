@@ -26,7 +26,12 @@ pub struct Args {
     pub end_ip: Option<String>,
 
     /// Port range (e.g., "80", "1-1000", "22,80,443")
-    #[arg(short = 'p', long, env = "SCAN_PORTS", default_value = "21,22,23,25,53,80,110,143,443,445,3306,3389,5432,6379,8080,8443,9200,27017")]
+    #[arg(
+        short = 'p',
+        long,
+        env = "SCAN_PORTS",
+        default_value = "21,22,23,25,53,80,110,143,443,445,3306,3389,5432,6379,8080,8443,9200,27017"
+    )]
     pub ports: String,
 
     /// Connection timeout in milliseconds
@@ -38,7 +43,12 @@ pub struct Args {
     pub concurrency: usize,
 
     /// Database file path
-    #[arg(short = 'd', long, env = "SCAN_DATABASE", default_value = "scan_results.db")]
+    #[arg(
+        short = 'd',
+        long,
+        env = "SCAN_DATABASE",
+        default_value = "scan_results.db"
+    )]
     pub database: String,
 
     /// Verbose output
@@ -280,7 +290,7 @@ impl Args {
                 [127, _, _, _] |                         // 127.0.0.0/8 (loopback)
                 [169, 254, _, _] |                       // 169.254.0.0/16 (link-local)
                 [224..=239, _, _, _] |                   // 224.0.0.0/4 (multicast)
-                [240..=255, _, _, _]                     // 240.0.0.0/4 (reserved)
+                [240..=255, _, _, _] // 240.0.0.0/4 (reserved)
             )
         } else {
             false
@@ -299,7 +309,7 @@ mod tests {
         assert!(Args::is_private_ipv4("172.31.255.255"));
         assert!(Args::is_private_ipv4("192.168.1.1"));
         assert!(Args::is_private_ipv4("127.0.0.1"));
-        
+
         assert!(!Args::is_private_ipv4("8.8.8.8"));
         assert!(!Args::is_private_ipv4("1.1.1.1"));
         assert!(!Args::is_private_ipv4("172.15.0.1"));

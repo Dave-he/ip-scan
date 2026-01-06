@@ -1,9 +1,9 @@
-use std::collections::HashMap;
+use crate::model::{ipv4_to_index, PortBitmap};
 use anyhow::Result;
-use rusqlite::{Connection, params};
-use std::sync::{Arc, Mutex};
 use chrono::Utc;
-use crate::model::{PortBitmap, ipv4_to_index};
+use rusqlite::{params, Connection};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 #[derive(Clone)]
 pub struct SqliteDB {
@@ -13,7 +13,7 @@ pub struct SqliteDB {
 impl SqliteDB {
     pub fn new(db_path: &str) -> Result<Self> {
         let conn = Connection::open(db_path)?;
-        
+
         // Port bitmaps table
         conn.execute(
             "CREATE TABLE IF NOT EXISTS port_bitmaps (
@@ -68,21 +68,27 @@ impl SqliteDB {
     }
 
     #[allow(dead_code)]
-    pub fn set_port_status(&self, ip: &str, port: u16, is_open: bool, scan_round: i64) -> Result<()> {
+    pub fn set_port_status(
+        &self,
+        ip: &str,
+        port: u16,
+        is_open: bool,
+        scan_round: i64,
+    ) -> Result<()> {
         let ip_index = ipv4_to_index(ip)?;
         let conn = self.conn.lock().unwrap();
-        
+
         // Get or create bitmap for this port
         let mut bitmap = self.get_port_bitmap_internal(&conn, port, "IPv4", scan_round)?;
-        
+
         // Update bitmap
         bitmap.set(ip_index, is_open);
-        
+
         // Save back to database
         let blob = bitmap.to_blob()?;
         let open_count = bitmap.count_ones() as i64;
         let timestamp = Utc::now().to_rfc3339();
-        
+
         conn.execute(
             "INSERT INTO port_bitmaps (port, ip_type, scan_round, bitmap, open_count, last_updated)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)
@@ -106,7 +112,11 @@ impl SqliteDB {
         Ok(())
     }
 
-    pub fn bulk_update_port_status(&self, updates: Vec<(String, u16, bool)>, scan_round: i64) -> Result<()> {
+    pub fn bulk_update_port_status(
+        &self,
+        updates: Vec<(String, u16, bool)>,
+        scan_round: i64,
+    ) -> Result<()> {
         if updates.is_empty() {
             return Ok(());
         }
@@ -116,26 +126,28 @@ impl SqliteDB {
 
         // Group by port to minimize bitmap loads/saves
         let mut updates_by_port: HashMap<u16, Vec<(u32, bool, String)>> = HashMap::new();
-        
+
         for (ip, port, is_open) in updates {
             match ipv4_to_index(&ip) {
                 Ok(ip_index) => {
-                    updates_by_port.entry(port)
+                    updates_by_port
+                        .entry(port)
                         .or_default()
                         .push((ip_index, is_open, ip));
-                },
+                }
                 Err(_) => continue, // Skip invalid IPs
             }
         }
 
         for (port, items) in updates_by_port {
             // 1. Update Bitmap
-            let mut bitmap = self.get_port_bitmap_internal(&transaction, port, "IPv4", scan_round)?;
-            
+            let mut bitmap =
+                self.get_port_bitmap_internal(&transaction, port, "IPv4", scan_round)?;
+
             for (ip_index, is_open, _) in &items {
                 bitmap.set(*ip_index, *is_open);
             }
-            
+
             let blob = bitmap.to_blob()?;
             let open_count = bitmap.count_ones() as i64;
             let timestamp = Utc::now().to_rfc3339();
@@ -171,7 +183,13 @@ impl SqliteDB {
         Ok(())
     }
 
-    fn get_port_bitmap_internal(&self, conn: &Connection, port: u16, ip_type: &str, scan_round: i64) -> Result<PortBitmap> {
+    fn get_port_bitmap_internal(
+        &self,
+        conn: &Connection,
+        port: u16,
+        ip_type: &str,
+        scan_round: i64,
+    ) -> Result<PortBitmap> {
         let result: rusqlite::Result<Vec<u8>> = conn.query_row(
             "SELECT bitmap FROM port_bitmaps WHERE port = ?1 AND ip_type = ?2 AND scan_round = ?3",
             params![port, ip_type, scan_round],
@@ -187,18 +205,17 @@ impl SqliteDB {
 
     pub fn get_stats(&self) -> Result<(usize, usize)> {
         let conn = self.conn.lock().unwrap();
-        
+
         let total_scanned: i64 = conn.query_row(
             "SELECT COALESCE(SUM(open_count), 0) FROM port_bitmaps",
             [],
-            |row| row.get(0)
+            |row| row.get(0),
         )?;
 
-        let unique_open: usize = conn.query_row(
-            "SELECT COUNT(*) FROM open_ports_detail",
-            [],
-            |row| row.get(0)
-        )?;
+        let unique_open: usize =
+            conn.query_row("SELECT COUNT(*) FROM open_ports_detail", [], |row| {
+                row.get(0)
+            })?;
 
         Ok((total_scanned as usize, unique_open))
     }
@@ -208,11 +225,12 @@ impl SqliteDB {
         let mut stmt = conn.prepare(
             "SELECT port, open_count FROM port_bitmaps WHERE scan_round = ?1 ORDER BY open_count DESC"
         )?;
-        
-        let stats = stmt.query_map([scan_round], |row| {
-            Ok((row.get::<_, u16>(0)?, row.get::<_, i64>(1)? as usize))
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
+
+        let stats = stmt
+            .query_map([scan_round], |row| {
+                Ok((row.get::<_, u16>(0)?, row.get::<_, i64>(1)? as usize))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
 
         Ok(stats)
     }
@@ -220,7 +238,7 @@ impl SqliteDB {
     pub fn save_metadata(&self, key: &str, value: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         let timestamp = Utc::now().to_rfc3339();
-        
+
         conn.execute(
             "INSERT INTO scan_metadata (key, value, updated_at)
              VALUES (?1, ?2, ?3)
@@ -228,19 +246,19 @@ impl SqliteDB {
              DO UPDATE SET value = ?2, updated_at = ?3",
             params![key, value, timestamp],
         )?;
-        
+
         Ok(())
     }
 
     pub fn get_metadata(&self, key: &str) -> Result<Option<String>> {
         let conn = self.conn.lock().unwrap();
-        
+
         let result = conn.query_row(
             "SELECT value FROM scan_metadata WHERE key = ?1",
             [key],
-            |row| row.get(0)
+            |row| row.get(0),
         );
-        
+
         match result {
             Ok(value) => Ok(Some(value)),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
@@ -275,9 +293,7 @@ impl SqliteDB {
         let last_round = self.get_metadata("last_scan_round")?;
 
         match (last_ip, last_ip_type, last_round) {
-            (Some(ip), Some(ip_type), Some(round)) => {
-                Ok(Some((ip, ip_type, round.parse()?)))
-            }
+            (Some(ip), Some(ip_type), Some(round)) => Ok(Some((ip, ip_type, round.parse()?))),
             _ => Ok(None),
         }
     }
@@ -287,7 +303,7 @@ impl SqliteDB {
         let size: i64 = conn.query_row(
             "SELECT COALESCE(SUM(LENGTH(bitmap)), 0) FROM port_bitmaps",
             [],
-            |row| row.get(0)
+            |row| row.get(0),
         )?;
         Ok(size as usize)
     }
@@ -301,34 +317,34 @@ mod tests {
     fn test_database_operations() {
         // Use in-memory database for testing
         let db = SqliteDB::new(":memory:").unwrap();
-        
+
         // Test initial state
         let (scanned, open) = db.get_stats().unwrap();
         assert_eq!(scanned, 0);
         assert_eq!(open, 0);
-        
+
         // Test saving port status
         db.set_port_status("192.168.1.1", 80, true, 1).unwrap();
         db.set_port_status("192.168.1.1", 443, false, 1).unwrap();
-        
+
         // Check stats
         let (scanned, open) = db.get_stats().unwrap();
         assert!(scanned > 0); // Should be 1 because one IP set to open
         assert_eq!(open, 1);
-        
+
         // Test metadata
         db.save_metadata("test_key", "test_value").unwrap();
         let value = db.get_metadata("test_key").unwrap();
         assert_eq!(value, Some("test_value".to_string()));
-        
+
         // Test round management
         let round = db.get_current_round().unwrap();
         assert_eq!(round, 1);
-        
+
         let new_round = db.increment_round().unwrap();
         assert_eq!(new_round, 2);
         assert_eq!(db.get_current_round().unwrap(), 2);
-        
+
         // Test progress
         db.save_progress("192.168.1.1", "IPv4", 1).unwrap();
         let progress = db.get_progress().unwrap();

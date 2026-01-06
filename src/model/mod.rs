@@ -2,6 +2,6 @@ mod bitmap;
 mod ip_range;
 mod metrics;
 
-pub use bitmap::{PortBitmap, ipv4_to_index};
-pub use ip_range::{IpRange, parse_port_range};
+pub use bitmap::{ipv4_to_index, PortBitmap};
+pub use ip_range::{parse_port_range, IpRange};
 pub use metrics::ScanMetrics;

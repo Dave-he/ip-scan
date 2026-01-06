@@ -1,16 +1,16 @@
-use std::net::{IpAddr, SocketAddr};
-use std::time::{Duration, Instant};
-use tokio::net::TcpStream;
-use tokio::time::timeout;
-use anyhow::Result;
-use tracing::{debug, info, error};
+use super::RateLimiter;
 use crate::dao::SqliteDB;
 use crate::model::ScanMetrics;
-use super::RateLimiter;
+use anyhow::Result;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
+use tokio::time::timeout;
+use tracing::{debug, error, info};
 
 const MAX_RETRIES: usize = 3;
 
@@ -29,7 +29,7 @@ impl ConScanner {
     pub fn new(db: SqliteDB, timeout_ms: u64, concurrent_limit: usize, scan_round: i64) -> Self {
         // Rate limiter: max 1000 requests per second
         let rate_limiter = RateLimiter::new(1000, Duration::from_secs(1));
-        
+
         // Channel for batch database writing
         let (tx, rx) = mpsc::channel(10000);
 
@@ -65,7 +65,9 @@ impl ConScanner {
                 Ok(Some(item)) => {
                     buffer.push(item);
                     if buffer.len() >= BATCH_SIZE {
-                        if let Err(e) = db.bulk_update_port_status(std::mem::take(&mut buffer), round) {
+                        if let Err(e) =
+                            db.bulk_update_port_status(std::mem::take(&mut buffer), round)
+                        {
                             error!("Failed to bulk update port status: {}", e);
                         }
                         last_flush = Instant::now();
@@ -104,7 +106,7 @@ impl ConScanner {
     pub async fn scan_port(&self, ip: IpAddr, port: u16) -> bool {
         // Apply rate limiting
         self.rate_limiter.acquire().await;
-        
+
         let addr = SocketAddr::new(ip, port);
         let timeout_duration = Duration::from_millis(self.timeout_ms);
 
@@ -136,13 +138,13 @@ impl ConScanner {
         let semaphore = Arc::new(tokio::sync::Semaphore::new(self.concurrent_limit));
         let ip_str = ip.to_string();
         let ip_type = Self::get_ip_type(&ip);
-        
+
         let mut join_set = JoinSet::new();
-        
+
         for port in ports {
             let sem = semaphore.clone();
             let scanner = self.clone_scanner();
-            
+
             join_set.spawn(async move {
                 let _permit = sem.acquire().await.unwrap();
                 scanner.metrics.increment_scanned();
@@ -156,9 +158,9 @@ impl ConScanner {
                 Ok((port, is_open)) => {
                     // Send to writer channel instead of direct DB write
                     if let Err(e) = self.result_tx.send((ip_str.clone(), port, is_open)).await {
-                         error!("Failed to send result to writer: {}", e);
+                        error!("Failed to send result to writer: {}", e);
                     }
-                    
+
                     if is_open {
                         open_ports.push(port);
                         self.metrics.increment_open();
@@ -217,11 +219,11 @@ impl ConScanner {
                     let ports_clone = ports.clone();
                     let scanner = self.clone_scanner();
                     let callback = progress_callback.clone();
-                    
+
                     // Acquire permit before spawning to control concurrency
                     // Note: acquire_owned allows moving the permit into the task
                     let permit = sem.acquire_owned().await.unwrap();
-                    
+
                     join_set.spawn(async move {
                         // permit is held until task completes
                         if let Err(e) = scanner.scan_ip_ports(ip, ports_clone).await {
@@ -229,18 +231,18 @@ impl ConScanner {
                         }
                         drop(permit);
                     });
-                    
+
                     total_dispatched += 1;
                     callback(total_dispatched);
                 }
-                
+
                 // Reap completed tasks
                 Some(res) = join_set.join_next() => {
                     if let Err(e) = res {
                         error!("Task join error: {}", e);
                     }
                 }
-                
+
                 else => {
                     // Channel closed and join_set empty?
                     if join_set.is_empty() {
@@ -253,7 +255,7 @@ impl ConScanner {
                 }
             }
         }
-        
+
         // Wait for remaining tasks
         while let Some(res) = join_set.join_next().await {
             if let Err(e) = res {
@@ -277,7 +279,7 @@ impl ConScanner {
             tx.send(ip).await?;
         }
         drop(tx); // Close sender so pipeline knows when to stop
-        
+
         // Adapt callback
         let cb = move |current| progress_callback(current, 0); // Total unknown in pipeline
         self.run_pipeline(rx, ports, cb).await
@@ -297,27 +299,25 @@ mod tests {
         // Start a local server
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
-        
+
         // Create scanner
         let db = SqliteDB::new(":memory:").unwrap();
         let scanner = ConScanner::new(db, 500, 10, 1);
-        
+
         // Spawn server accept loop
-        tokio::spawn(async move {
-            while let Ok(_) = listener.accept().await {}
-        });
-        
+        tokio::spawn(async move { while let Ok(_) = listener.accept().await {} });
+
         // Test open port
         let ip: IpAddr = "127.0.0.1".parse().unwrap();
         let result = scanner.scan_port(ip, port).await;
         assert!(result);
-        
+
         // Test closed port
         // Get a free port and ensure it's closed by binding and dropping
         let closed_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let closed_port = closed_listener.local_addr().unwrap().port();
         drop(closed_listener);
-        
+
         let result = scanner.scan_port(ip, closed_port).await;
         assert!(!result);
     }
@@ -327,10 +327,8 @@ mod tests {
         // Start a local server
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
-        
-        tokio::spawn(async move {
-            while let Ok(_) = listener.accept().await {}
-        });
+
+        tokio::spawn(async move { while let Ok(_) = listener.accept().await {} });
 
         // Get a free port and ensure it's closed by binding and dropping
         let closed_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -340,13 +338,18 @@ mod tests {
         let db = SqliteDB::new(":memory:").unwrap();
         let scanner = ConScanner::new(db.clone(), 500, 10, 1);
         let ip: IpAddr = "127.0.0.1".parse().unwrap();
-        
+
         let ports = vec![port, closed_port];
         let open_ports = scanner.scan_ip_ports(ip, ports).await.unwrap();
-        
-        assert_eq!(open_ports.len(), 1, "Expected 1 open port, found {:?}", open_ports);
+
+        assert_eq!(
+            open_ports.len(),
+            1,
+            "Expected 1 open port, found {:?}",
+            open_ports
+        );
         assert_eq!(open_ports[0], port);
-        
+
         // Verify metrics
         assert_eq!(scanner.get_metrics().get_scanned(), 2);
         assert_eq!(scanner.get_metrics().get_open(), 1);

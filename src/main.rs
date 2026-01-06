@@ -5,11 +5,11 @@ mod service;
 
 use anyhow::Result;
 use clap::Parser;
-use tracing::{info, error, Level};
+use tracing::{error, info, Level};
 
 use cli::Args;
 use dao::SqliteDB;
-use model::{IpRange, parse_port_range};
+use model::{parse_port_range, IpRange};
 use service::ConScanner;
 use service::SynScanner;
 
@@ -19,7 +19,11 @@ async fn main() -> Result<()> {
 
     // Initialize logging
     tracing_subscriber::fmt()
-        .with_max_level(if args.verbose { Level::DEBUG } else { Level::INFO })
+        .with_max_level(if args.verbose {
+            Level::DEBUG
+        } else {
+            Level::INFO
+        })
         .with_target(false)
         .init();
 
@@ -29,7 +33,7 @@ async fn main() -> Result<()> {
     } else {
         info!("Mode: Connect Scan");
     }
-    
+
     info!("Config: concurrency={}, timeout={}ms, db={}, loop={}, ipv4={}, ipv6={}, only_open={}, skip_private={}", 
         args.concurrency, args.timeout, args.database, args.loop_mode, args.ipv4, args.ipv6, args.only_store_open, args.skip_private);
 
@@ -38,7 +42,8 @@ async fn main() -> Result<()> {
     info!("Database initialized");
 
     // Check for previous scan progress
-    let (mut current_round, resume_ip, resume_ip_type) = db.get_progress()?
+    let (mut current_round, resume_ip, resume_ip_type) = db
+        .get_progress()?
         .map(|(ip, ip_type, round)| {
             info!("Resuming from: {} ({}) round {}", ip, ip_type, round);
             (round, Some(ip), Some(ip_type))
@@ -57,17 +62,22 @@ async fn main() -> Result<()> {
 
         // Scan IPv4 if enabled
         if args.ipv4 {
-            let (start_ip, end_ip) = args.start_ip.as_ref()
+            let (start_ip, end_ip) = args
+                .start_ip
+                .as_ref()
                 .zip(args.end_ip.as_ref())
                 .map(|(s, e)| (s.clone(), e.clone()))
                 .unwrap_or_else(Args::get_default_ipv4_range);
 
             // Resume from last position if applicable
             let actual_start_ip = if resume_ip_type.as_deref() == Some("IPv4") {
-                resume_ip.as_ref().map(|ip| {
-                    info!("Resuming IPv4 from: {}", ip);
-                    ip.clone()
-                }).unwrap_or(start_ip)
+                resume_ip
+                    .as_ref()
+                    .map(|ip| {
+                        info!("Resuming IPv4 from: {}", ip);
+                        ip.clone()
+                    })
+                    .unwrap_or(start_ip)
             } else {
                 start_ip
             };
@@ -76,10 +86,10 @@ async fn main() -> Result<()> {
             match IpRange::new(&actual_start_ip, &end_ip) {
                 Ok(ip_range) => {
                     let start_time = std::time::Instant::now();
-                    
+
                     // Pipeline Channel
                     let (tx, rx) = tokio::sync::mpsc::channel(2000);
-                    
+
                     // Producer Task
                     let args_clone = args.clone();
                     let ip_iter = ip_range.iter();
@@ -102,20 +112,25 @@ async fn main() -> Result<()> {
 
                     // Consumer (Scanner)
                     let current_round_clone = current_round;
-                    
+
                     let metrics = if args.syn {
                         // SYN Scan Mode
                         match SynScanner::new(db.clone(), current_round) {
                             Ok(scanner) => {
-                                scanner.run_pipeline(rx, ports.clone(), move |total_scanned| {
-                                    if total_scanned % 1000 == 0 {
-                                        let elapsed = start_time.elapsed().as_secs_f64();
-                                        let rate = total_scanned as f64 / elapsed;
-                                        info!("IPv4 Progress [R{}]: {} IPs - {:.2} packets/sec", current_round_clone, total_scanned, rate);
-                                    }
-                                }).await?;
+                                scanner
+                                    .run_pipeline(rx, ports.clone(), move |total_scanned| {
+                                        if total_scanned % 1000 == 0 {
+                                            let elapsed = start_time.elapsed().as_secs_f64();
+                                            let rate = total_scanned as f64 / elapsed;
+                                            info!(
+                                                "IPv4 Progress [R{}]: {} IPs - {:.2} packets/sec",
+                                                current_round_clone, total_scanned, rate
+                                            );
+                                        }
+                                    })
+                                    .await?;
                                 scanner.get_metrics().clone()
-                            },
+                            }
                             Err(e) => {
                                 error!("Failed to initialize SYN scanner: {}", e);
                                 return Err(e);
@@ -123,24 +138,37 @@ async fn main() -> Result<()> {
                         }
                     } else {
                         // Connect Scan Mode
-                        let scanner = ConScanner::new(db.clone(), args.timeout, args.concurrency, current_round);
-                        scanner.run_pipeline(rx, ports.clone(), move |total_scanned| {
-                            if total_scanned % 1000 == 0 {
-                                let elapsed = start_time.elapsed().as_secs_f64();
-                                let rate = total_scanned as f64 / elapsed;
-                                info!("IPv4 Progress [R{}]: {} IPs - {:.2} IPs/sec", current_round_clone, total_scanned, rate);
-                            }
-                        }).await?;
+                        let scanner = ConScanner::new(
+                            db.clone(),
+                            args.timeout,
+                            args.concurrency,
+                            current_round,
+                        );
+                        scanner
+                            .run_pipeline(rx, ports.clone(), move |total_scanned| {
+                                if total_scanned % 1000 == 0 {
+                                    let elapsed = start_time.elapsed().as_secs_f64();
+                                    let rate = total_scanned as f64 / elapsed;
+                                    info!(
+                                        "IPv4 Progress [R{}]: {} IPs - {:.2} IPs/sec",
+                                        current_round_clone, total_scanned, rate
+                                    );
+                                }
+                            })
+                            .await?;
                         scanner.get_metrics().clone()
                     };
-                    
+
                     // Wait for producer
                     let _ = producer.await;
 
                     let total_processed = metrics.get_scanned();
-                    info!("IPv4 scan completed: {} IPs in {:.2}s ({:.2} IPs/sec)", 
-                        total_processed, start_time.elapsed().as_secs_f64(), 
-                        total_processed as f64 / start_time.elapsed().as_secs_f64());
+                    info!(
+                        "IPv4 scan completed: {} IPs in {:.2}s ({:.2} IPs/sec)",
+                        total_processed,
+                        start_time.elapsed().as_secs_f64(),
+                        total_processed as f64 / start_time.elapsed().as_secs_f64()
+                    );
                     metrics.print_summary();
                 }
                 Err(e) => error!("Failed to create IPv4 range: {}", e),
@@ -151,7 +179,10 @@ async fn main() -> Result<()> {
         let (total_results, unique_open) = db.get_stats()?;
         let memory_mb = db.get_memory_usage()? as f64 / 1024.0 / 1024.0;
         info!("=== Round {} Stats ===", current_round);
-        info!("Total open records: {}, Unique IPs: {}, Memory: {:.2} MB", total_results, unique_open, memory_mb);
+        info!(
+            "Total open records: {}, Unique IPs: {}, Memory: {:.2} MB",
+            total_results, unique_open, memory_mb
+        );
 
         // Show top ports
         if let Ok(port_stats) = db.get_stats_by_port(current_round) {

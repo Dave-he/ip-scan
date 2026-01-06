@@ -15,8 +15,7 @@ impl PortBitmap {
 
     pub fn from_blob(data: &[u8]) -> Result<Self> {
         // Deserialize from database blob
-        let segments: std::collections::HashMap<u32, Vec<u8>> = 
-            bincode::deserialize(data)?;
+        let segments: std::collections::HashMap<u32, Vec<u8>> = bincode::deserialize(data)?;
         Ok(PortBitmap { segments })
     }
 
@@ -33,10 +32,11 @@ impl PortBitmap {
 
     pub fn set(&mut self, ip_index: u32, value: bool) {
         let (segment_id, bit_offset) = Self::get_segment_and_offset(ip_index);
-        
-        let segment = self.segments.entry(segment_id).or_insert_with(|| {
-            vec![0u8; SEGMENT_SIZE]
-        });
+
+        let segment = self
+            .segments
+            .entry(segment_id)
+            .or_insert_with(|| vec![0u8; SEGMENT_SIZE]);
 
         let byte_index = (bit_offset / 8) as usize;
         let bit_index = (bit_offset % 8) as u8;
@@ -51,7 +51,7 @@ impl PortBitmap {
     #[allow(dead_code)]
     pub fn get(&self, ip_index: u32) -> bool {
         let (segment_id, bit_offset) = Self::get_segment_and_offset(ip_index);
-        
+
         if let Some(segment) = self.segments.get(&segment_id) {
             let byte_index = (bit_offset / 8) as usize;
             let bit_index = (bit_offset % 8) as u8;
@@ -62,8 +62,14 @@ impl PortBitmap {
     }
 
     pub fn count_ones(&self) -> usize {
-        self.segments.values()
-            .map(|segment| segment.iter().map(|byte| byte.count_ones() as usize).sum::<usize>())
+        self.segments
+            .values()
+            .map(|segment| {
+                segment
+                    .iter()
+                    .map(|byte| byte.count_ones() as usize)
+                    .sum::<usize>()
+            })
             .sum()
     }
 }
@@ -85,12 +91,12 @@ mod tests {
     #[test]
     fn test_bitmap_operations() {
         let mut bitmap = PortBitmap::new();
-        
+
         // Test set and get
         bitmap.set(100, true);
         assert!(bitmap.get(100));
         assert!(!bitmap.get(101));
-        
+
         bitmap.set(100, false);
         assert!(!bitmap.get(100));
     }
@@ -117,10 +123,10 @@ mod tests {
         let mut bitmap = PortBitmap::new();
         bitmap.set(100, true);
         bitmap.set(200, true);
-        
+
         let blob = bitmap.to_blob().unwrap();
         let restored = PortBitmap::from_blob(&blob).unwrap();
-        
+
         assert!(restored.get(100));
         assert!(restored.get(200));
         assert!(!restored.get(300));
