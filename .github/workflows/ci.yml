@@ -38,11 +38,39 @@ jobs:
         profile: minimal
         target: ${{ matrix.target }}
 
-    - name: Install Npcap for Windows
+    - name: Setup Npcap SDK for Windows (no driver)
       if: runner.os == 'Windows'
+      shell: pwsh
       run: |
-        Invoke-WebRequest -Uri "https://npcap.com/dist/npcap-1.79.exe" -OutFile "npcap-installer.exe"
-        Start-Process -FilePath "npcap-installer.exe" -ArgumentList "/S", "/winpcap_mode=yes", "/npf_startup=yes" -Wait
+        $SdkUrl = "${{ env.NPCAP_SDK_URL }}"
+        if (-not $SdkUrl) { $SdkUrl = "https://npcap.com/dist/npcap-sdk-1.15.zip" }
+        $SdkZip = "$env:RUNNER_TEMP\npcap-sdk.zip"
+        $SdkDir = "$env:RUNNER_TEMP\npcap-sdk"
+
+        Write-Host "Downloading Npcap SDK from $SdkUrl"
+        Invoke-WebRequest -Uri $SdkUrl -OutFile $SdkZip
+
+        Write-Host "Expanding Npcap SDK to $SdkDir"
+        Expand-Archive -Path $SdkZip -DestinationPath $SdkDir -Force
+
+        # Try to locate actual SDK root (some zips contain a versioned subfolder)
+        $Candidate = Get-ChildItem -Directory $SdkDir | Where-Object {
+          Test-Path "$(($_.FullName))\Lib\x64\Packet.lib" -and Test-Path "$(($_.FullName))\Include"
+        } | Select-Object -First 1
+        if ($Candidate) { $SdkDir = $Candidate.FullName }
+
+        if (-not (Test-Path "$SdkDir\Lib\x64\Packet.lib")) {
+          Write-Error "Packet.lib not found in $SdkDir\Lib\x64. Check NPCAP_SDK_URL or SDK layout."
+          exit 1
+        }
+
+        # Persist environment variables for subsequent steps
+        Add-Content -Path $env:GITHUB_ENV -Value "NPCAP_DIR=$SdkDir"
+        Add-Content -Path $env:GITHUB_ENV -Value "WPCAP_DIR=$SdkDir"
+        Add-Content -Path $env:GITHUB_ENV -Value "LIB=$SdkDir\Lib\x64;$env:LIB"
+        Add-Content -Path $env:GITHUB_ENV -Value "INCLUDE=$SdkDir\Include;$env:INCLUDE"
+
+        Write-Host "Npcap SDK configured: NPCAP_DIR=$SdkDir"
 
     - name: Cache Cargo dependencies
       uses: actions/cache@v3
