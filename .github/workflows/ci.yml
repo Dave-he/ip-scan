@@ -1,136 +1,70 @@
-name: CI & Release
+name: CI
 
 on:
   push:
-    branches: [ "master" ]
-    tags: [ 'v*.*.*' ]
+    branches: [ master, main ]
   pull_request:
-    branches: [ "master" ]
-
-env:
-  CARGO_TERM_COLOR: always
-  BINARY_NAME: ip-scan
 
 jobs:
   build:
-    runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            artifact_name: ip-scan-linux-amd64.tar.gz
-          - os: macos-latest
-            target: x86_64-apple-darwin
-            artifact_name: ip-scan-macos-amd64.tar.gz
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            artifact_name: ip-scan-windows-amd64.zip
-
+        os: [ubuntu-latest, windows-latest]
+        rust: [stable]
+    runs-on: ${{ matrix.os }}
     steps:
-    - uses: actions/checkout@v3
+      - name: Checkout
+        uses: actions/checkout@v4
 
-    - name: Install Rust toolchain
-      uses: actions-rs/toolchain@v1
-      with:
-        toolchain: stable
-        profile: minimal
-        target: ${{ matrix.target }}
-
-    - name: Setup Npcap SDK for Windows (no driver)
-      if: runner.os == 'Windows'
-      shell: pwsh
-      run: |
-        $SdkUrl = "${{ env.NPCAP_SDK_URL }}"
-        if (-not $SdkUrl) { $SdkUrl = "https://npcap.com/dist/npcap-sdk-1.15.zip" }
-        $SdkZip = "$env:RUNNER_TEMP\npcap-sdk.zip"
-        $SdkDir = "$env:RUNNER_TEMP\npcap-sdk"
-
-        Write-Host "Downloading Npcap SDK from $SdkUrl"
-        Invoke-WebRequest -Uri $SdkUrl -OutFile $SdkZip
-
-        Write-Host "Expanding Npcap SDK to $SdkDir"
-        Expand-Archive -Path $SdkZip -DestinationPath $SdkDir -Force
-
-        # Try to locate actual SDK root (some zips contain a versioned subfolder)
-        $Candidate = Get-ChildItem -Directory $SdkDir | Where-Object {
-          Test-Path "$(($_.FullName))\Lib\x64\Packet.lib" -and Test-Path "$(($_.FullName))\Include"
-        } | Select-Object -First 1
-        if ($Candidate) { $SdkDir = $Candidate.FullName }
-
-        if (-not (Test-Path "$SdkDir\Lib\x64\Packet.lib")) {
-          Write-Error "Packet.lib not found in $SdkDir\Lib\x64. Check NPCAP_SDK_URL or SDK layout."
-          exit 1
-        }
-
-        # Persist environment variables for subsequent steps
-        Add-Content -Path $env:GITHUB_ENV -Value "NPCAP_DIR=$SdkDir"
-        Add-Content -Path $env:GITHUB_ENV -Value "WPCAP_DIR=$SdkDir"
-        Add-Content -Path $env:GITHUB_ENV -Value "LIB=$SdkDir\Lib\x64;$env:LIB"
-        Add-Content -Path $env:GITHUB_ENV -Value "INCLUDE=$SdkDir\Include;$env:INCLUDE"
-
-        Write-Host "Npcap SDK configured: NPCAP_DIR=$SdkDir"
-
-    - name: Cache Cargo dependencies
-      uses: actions/cache@v3
-      with:
-        path: |
-          ~/.cargo/bin/
-          ~/.cargo/registry/index/
-          ~/.cargo/registry/cache/
-          ~/.cargo/git/db/
-          target/
-        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-
-    - name: Build
-      run: cargo build --verbose --target ${{ matrix.target }}
-      if: "!startsWith(github.ref, 'refs/tags/')"
-
-    - name: Build Release
-      run: cargo build --release --verbose --target ${{ matrix.target }}
-      if: "startsWith(github.ref, 'refs/tags/')"
-
-    - name: Run tests
-      run: cargo test --verbose --target ${{ matrix.target }}
-
-    - name: Run clippy
-      run: cargo clippy --all-targets --all-features -- -D warnings
-
-    - name: Package for Release
-      if: "startsWith(github.ref, 'refs/tags/')"
-      shell: bash
-      run: |
-        if [ "${{ runner.os }}" == "Windows" ]; then
-          mv "target/${{ matrix.target }}/release/${{ env.BINARY_NAME }}.exe" .
-          zip "${{ matrix.artifact_name }}" "${{ env.BINARY_NAME }}.exe"
-        else
-          mv "target/${{ matrix.target }}/release/${{ env.BINARY_NAME }}" .
-          tar -czvf "${{ matrix.artifact_name }}" "${{ env.BINARY_NAME }}"
-        fi
-
-    - name: Upload Artifact
-      if: "startsWith(github.ref, 'refs/tags/')"
-      uses: actions/upload-artifact@v3
-      with:
-        name: ${{ matrix.artifact_name }}
-        path: ${{ matrix.artifact_name }}
-
-  release:
-    name: Create Release
-    runs-on: ubuntu-latest
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/')
-    permissions:
-      contents: write
-
-    steps:
-      - name: Download all release assets
-        uses: actions/download-artifact@v3
+      - name: Setup Rust (${{ matrix.rust }})
+        uses: dtolnay/rust-toolchain@master
         with:
-          path: release-assets
+          toolchain: ${{ matrix.rust }}
 
-      - name: Create Release and Upload Assets
-        uses: softprops/action-gh-release@v1
+      - name: Cache cargo
+        uses: actions/cache@v4
         with:
-          files: release-assets/*/*
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Build (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo build --verbose
+
+      - name: Prepare Npcap SDK (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $sdkZip = "$env:RUNNER_TEMP\npcap-sdk.zip"
+          $sdkDir = "$env:RUNNER_TEMP\npcap-sdk"
+          $url = 'https://npcap.com/dist/npcap-sdk-1.15.zip'
+          Write-Host "Downloading Npcap SDK from $url"
+          Invoke-WebRequest -Uri $url -OutFile $sdkZip
+          Write-Host "Extracting $sdkZip to $sdkDir"
+          if (Test-Path $sdkDir) { Remove-Item -Recurse -Force $sdkDir }
+          Expand-Archive -Path $sdkZip -DestinationPath $sdkDir -Force
+          $sdkRoot = Join-Path $sdkDir 'npcap-sdk-1.15'
+          $libx64 = Join-Path $sdkRoot 'Lib\x64'
+          $include = Join-Path $sdkRoot 'Include'
+          $packetLib = Join-Path $libx64 'Packet.lib'
+          if (!(Test-Path $packetLib)) {
+            Get-ChildItem -Recurse $sdkRoot | Write-Output
+            throw "Packet.lib not found in $libx64"
+          }
+          Write-Host "Found Packet.lib at $packetLib"
+          # Export environment variables for subsequent steps
+          "$([string]::Format('WPCAP_DIR={0}', $sdkRoot))" >> $env:GITHUB_ENV
+          "$([string]::Format('NPCAP_DIR={0}', $sdkRoot))" >> $env:GITHUB_ENV
+          "$([string]::Format('LIB={0};{1}', $libx64, $env:LIB))" >> $env:GITHUB_ENV
+          "$([string]::Format('INCLUDE={0};{1}', $include, $env:INCLUDE))" >> $env:GITHUB_ENV
+
+      - name: Build (Windows)
+        if: matrix.os == 'windows-latest'
+        run: cargo build --verbose
