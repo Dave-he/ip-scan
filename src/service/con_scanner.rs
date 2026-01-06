@@ -305,7 +305,7 @@ mod tests {
         let scanner = ConScanner::new(db, 500, 10, 1);
 
         // Spawn server accept loop
-        tokio::spawn(async move { while let Ok(_) = listener.accept().await {} });
+        tokio::spawn(async move { while (listener.accept().await).is_ok() {} });
 
         // Test open port
         let ip: IpAddr = "127.0.0.1".parse().unwrap();
@@ -328,7 +328,7 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
 
-        tokio::spawn(async move { while let Ok(_) = listener.accept().await {} });
+        tokio::spawn(async move { while (listener.accept().await).is_ok() {} });
 
         // Get a free port and ensure it's closed by binding and dropping
         let closed_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
