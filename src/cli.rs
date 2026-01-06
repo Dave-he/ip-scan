@@ -78,6 +78,30 @@ pub struct Args {
     /// Enable SYN scan mode (requires Root/Admin)
     #[arg(long, env = "SCAN_SYN", action = clap::ArgAction::SetTrue)]
     pub syn: bool,
+
+    /// Enable API server mode
+    #[arg(long, env = "SCAN_API", action = clap::ArgAction::SetTrue)]
+    pub api: bool,
+
+    /// API server port (default: 8080)
+    #[arg(long, env = "SCAN_API_PORT", default_value = "8080")]
+    pub api_port: u16,
+
+    /// API server bind address (default: 0.0.0.0)
+    #[arg(long, env = "SCAN_API_HOST", default_value = "0.0.0.0")]
+    pub api_host: String,
+
+    /// Enable Swagger UI (default: true when API is enabled)
+    #[arg(long, env = "SCAN_SWAGGER_UI", action = clap::ArgAction::SetTrue)]
+    pub swagger_ui: bool,
+
+    /// Run only API server (no scanning)
+    #[arg(long, env = "SCAN_API_ONLY", action = clap::ArgAction::SetTrue)]
+    pub api_only: bool,
+
+    /// Run only scanner (no API)
+    #[arg(long, env = "SCAN_NO_API", action = clap::ArgAction::SetTrue)]
+    pub no_api: bool,
 }
 
 #[derive(Debug, Deserialize)]

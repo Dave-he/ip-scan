@@ -1,3 +1,4 @@
+mod api;
 mod cli;
 mod dao;
 mod model;
@@ -9,9 +10,6 @@ use tracing::{error, info, Level};
 
 use cli::Args;
 use dao::SqliteDB;
-use model::{parse_port_range, IpRange};
-use service::ConScanner;
-use service::SynScanner;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -27,7 +25,37 @@ async fn main() -> Result<()> {
         .with_target(false)
         .init();
 
-    info!("IP Scanner starting");
+    // Determine running mode
+    if args.api_only {
+        info!("Starting in API-only mode");
+        run_api_server(&args).await
+    } else if args.no_api {
+        info!("Starting in scanner-only mode");
+        run_scanner(&args).await
+    } else if args.api {
+        info!("Starting in combined mode (scanner + API)");
+        run_combined(&args).await
+    } else {
+        info!("Starting in scanner-only mode (default)");
+        run_scanner(&args).await
+    }
+}
+
+/// Run only the API server
+async fn run_api_server(args: &Args) -> Result<()> {
+    info!("API Server starting on {}:{}", args.api_host, args.api_port);
+    
+    // Initialize database
+    let db = SqliteDB::new(&args.database)?;
+    info!("Database initialized: {}", args.database);
+    
+    // Start API server
+    start_api_server(db, args).await
+}
+
+/// Run only the scanner
+async fn run_scanner(args: &Args) -> Result<()> {
+    info!("Scanner starting");
     if args.syn {
         info!("Mode: SYN Scan (Requires Root/Admin)");
     } else {
@@ -41,6 +69,95 @@ async fn main() -> Result<()> {
     let db = SqliteDB::new(&args.database)?;
     info!("Database initialized");
 
+    // Run scanner
+    run_scanner_logic(db, args).await
+}
+
+/// Run both scanner and API server
+async fn run_combined(args: &Args) -> Result<()> {
+    info!("Starting combined scanner and API server");
+    
+    // Initialize database
+    let db = SqliteDB::new(&args.database)?;
+    info!("Database initialized: {}", args.database);
+    
+    // Start scanner in background
+    let scanner_args = args.clone();
+    let scanner_db = db.clone();
+    let scanner_handle = tokio::spawn(async move {
+        if let Err(e) = run_scanner_logic(scanner_db, &scanner_args).await {
+            error!("Scanner error: {}", e);
+        }
+    });
+    
+    // Start API server
+    let api_result = start_api_server(db, args).await;
+    
+    // Wait for scanner to finish (if it ever does in loop mode)
+    let _ = scanner_handle.await;
+    
+    api_result
+}
+
+/// Start the API server
+async fn start_api_server(db: SqliteDB, args: &Args) -> Result<()> {
+    use actix_cors::Cors;
+    use actix_web::{web, App, HttpServer};
+    use utoipa::OpenApi;
+    use utoipa_swagger_ui::SwaggerUi;
+    
+    let db_data = web::Data::new(db);
+    
+    // Get OpenAPI documentation
+    let openapi = api::ApiDoc::openapi();
+    
+    // Copy necessary args fields for closure
+    let swagger_ui_enabled = args.swagger_ui || args.api || args.api_only;
+    let api_host = args.api_host.clone();
+    let api_port = args.api_port;
+    
+    info!("Starting HTTP server on {}:{}", api_host, api_port);
+    
+    let mut server = HttpServer::new(move || {
+        let cors = Cors::default()
+            .allow_any_origin()
+            .allow_any_method()
+            .allow_any_header()
+            .max_age(3600);
+        
+        let mut app = App::new()
+            .wrap(cors)
+            .app_data(db_data.clone())
+            .configure(api::init_routes);
+        
+        // Add Swagger UI if enabled
+        if swagger_ui_enabled {
+            app = app.service(
+                SwaggerUi::new("/swagger-ui/{_:.*}")
+                    .url("/api-docs/openapi.json", openapi.clone()),
+            );
+        }
+        
+        app
+    });
+    
+    // Bind to specified address and port
+    server = server.bind((api_host.as_str(), api_port))?;
+    
+    info!("API server started successfully");
+    info!("Swagger UI available at: http://{}:{}/swagger-ui/", args.api_host, args.api_port);
+    info!("API endpoints available at: http://{}:{}/api/v1/", args.api_host, args.api_port);
+    
+    server.run().await?;
+    
+    Ok(())
+}
+
+/// Scanner logic (extracted from original main function)
+async fn run_scanner_logic(db: SqliteDB, args: &Args) -> Result<()> {
+    use model::{parse_port_range, IpRange};
+    use service::{ConScanner, SynScanner};
+    
     // Check for previous scan progress
     let (mut current_round, resume_ip, resume_ip_type) = db
         .get_progress()?
