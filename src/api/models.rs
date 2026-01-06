@@ -226,6 +226,17 @@ pub enum ExportFormat {
     NdJson,
 }
 
+/// Scan status enumeration
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub enum ScanStatus {
+    Idle,
+    Starting,
+    Running,
+    Stopping,
+    Stopped,
+    Error(String),
+}
+
 // Default values
 fn default_page() -> usize {
     1

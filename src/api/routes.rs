@@ -62,8 +62,6 @@ pub fn config_export_routes(cfg: &mut web::ServiceConfig) {
         handlers::get_results_by_round,
         handlers::get_stats,
         handlers::get_top_ports,
-        handlers::start_scan,
-        handlers::stop_scan,
         handlers::get_scan_status,
         handlers::get_scan_history,
         handlers::export_csv,
@@ -84,6 +82,7 @@ pub fn config_export_routes(cfg: &mut web::ServiceConfig) {
             models::TopPortsQuery,
             models::StartScanRequest,
             models::ExportFormat,
+            models::ScanStatus,
         )
     ),
     tags(

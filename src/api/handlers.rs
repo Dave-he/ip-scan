@@ -332,63 +332,73 @@ pub async fn get_top_ports(
 }
 
 /// Start a new scan
-#[utoipa::path(
-    post,
-    path = "/api/v1/scan/start",
-    request_body = StartScanRequest,
-    responses(
-        (status = 501, description = "Not implemented - use CLI to start scanner"),
-        (status = 400, description = "Invalid scan parameters", body = ErrorResponse),
-        (status = 409, description = "Scan already in progress", body = ErrorResponse),
-        (status = 500, description = "Internal server error", body = ErrorResponse)
-    ),
-    tag = "Scan Control"
-)]
 pub async fn start_scan(
     db: web::Data<SqliteDB>,
     request: web::Json<StartScanRequest>,
 ) -> impl Responder {
+    use crate::service::ScanController;
+    use crate::cli::Args;
+    
+    // Create a minimal base args for scan controller
+    let base_args = Args {
+        config_flag: None,
+        config_pos: None,
+        start_ip: None,
+        end_ip: None,
+        ports: "80".to_string(),
+        timeout: 500,
+        concurrency: 100,
+        database: "scan_results.db".to_string(),
+        verbose: false,
+        loop_mode: false,
+        ipv4: true,
+        ipv6: false,
+        only_store_open: true,
+        skip_private: true,
+        syn: false,
+        geoip_db: None,
+        no_geo: false,
+        worker_threads: None,
+        pipeline_buffer: 2000,
+        result_buffer: 10000,
+        db_batch_size: 2000,
+        flush_interval_ms: 1000,
+        max_rate: 100000,
+        rate_window_secs: 1,
+        api: false,
+        api_only: false,
+        no_api: false,
+        api_host: "127.0.0.1".to_string(),
+        api_port: 8080,
+        swagger_ui: false,
+    };
+
+    // Create scan controller
+    let controller = ScanController::new(db.get_ref().clone());
+
     // Validate request parameters
-    if let Some(ref ports) = request.ports {
-        if ports.is_empty() {
-            return HttpResponse::BadRequest().json(ErrorResponse {
-                error: "Ports list cannot be empty".to_string(),
-                code: Some("INVALID_PORTS".to_string()),
-            });
-        }
-    } else {
+    if request.ports.is_none() && request.start_ip.is_none() && request.end_ip.is_none() {
         return HttpResponse::BadRequest().json(ErrorResponse {
-            error: "Ports parameter is required".to_string(),
-            code: Some("MISSING_PORTS".to_string()),
+            error: "Either ports or IP range must be specified".to_string(),
+            code: Some("INVALID_PARAMETERS".to_string()),
         });
     }
 
-    // Check if a scan is already in progress by checking metadata
-    match db.get_metadata("scan_status") {
-        Ok(Some(status)) if status == "running" => {
-            return HttpResponse::Conflict().json(ErrorResponse {
-                error: "A scan is already in progress".to_string(),
-                code: Some("SCAN_IN_PROGRESS".to_string()),
-            });
+    match controller.start_scan(request.into_inner(), &base_args).await {
+        Ok(scan_id) => {
+            HttpResponse::Ok().json(json!({
+                "scan_id": scan_id,
+                "message": "Scan started successfully"
+            }))
         }
         Err(e) => {
-            error!("Failed to check scan status: {}", e);
-            return HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to check scan status".to_string(),
-                code: Some("DATABASE_ERROR".to_string()),
-            });
+            error!("Failed to start scan: {}", e);
+            HttpResponse::Conflict().json(ErrorResponse {
+                error: format!("Failed to start scan: {}", e),
+                code: Some("SCAN_START_FAILED".to_string()),
+            })
         }
-        _ => {}
     }
-
-    // Note: This API currently only updates metadata.
-    // Actual scan control requires integration with the scanner process.
-    // For now, this serves as a placeholder for future implementation.
-    
-    HttpResponse::NotImplemented().json(ErrorResponse {
-        error: "Scan control via API is not yet fully implemented. The scanner must be started using command-line arguments in combined mode (--api flag).".to_string(),
-        code: Some("NOT_IMPLEMENTED".to_string()),
-    })
 }
 
 /// Stop the current scan
@@ -402,14 +412,26 @@ pub async fn start_scan(
     ),
     tag = "Scan Control"
 )]
-pub async fn stop_scan(_db: web::Data<SqliteDB>) -> impl Responder {
-    // Note: This API currently only updates metadata.
-    // Actual scan control requires integration with the scanner process.
+pub async fn stop_scan(db: web::Data<SqliteDB>) -> impl Responder {
+    use crate::service::ScanController;
     
-    HttpResponse::NotImplemented().json(ErrorResponse {
-        error: "Scan control via API is not yet fully implemented. The scanner runs independently and must be stopped via process signals (Ctrl+C).".to_string(),
-        code: Some("NOT_IMPLEMENTED".to_string()),
-    })
+    // Create scan controller
+    let controller = ScanController::new(db.get_ref().clone());
+
+    match controller.stop_scan().await {
+        Ok(()) => {
+            HttpResponse::Ok().json(json!({
+                "message": "Scan stopped successfully"
+            }))
+        }
+        Err(e) => {
+            error!("Failed to stop scan: {}", e);
+            HttpResponse::NotFound().json(ErrorResponse {
+                error: format!("Failed to stop scan: {}", e),
+                code: Some("SCAN_STOP_FAILED".to_string()),
+            })
+        }
+    }
 }
 
 /// Get current scan status
@@ -423,28 +445,35 @@ pub async fn stop_scan(_db: web::Data<SqliteDB>) -> impl Responder {
     tag = "Scan Control"
 )]
 pub async fn get_scan_status(db: web::Data<SqliteDB>) -> impl Responder {
-    // Get scan status from metadata
-    let status = db
+    use crate::service::ScanController;
+    
+    // Create scan controller
+    let controller = ScanController::new(db.get_ref().clone());
+    
+    // Get controller status
+    let controller_status = controller.get_status();
+    let is_running = controller.is_running();
+    let scan_id = controller.get_scan_id();
+
+    // Get database metadata
+    let db_status = db
         .get_metadata("scan_status")
         .unwrap_or(Some("idle".to_string()))
         .unwrap_or("idle".to_string());
     let current_round = db.get_current_round().unwrap_or(1);
     let last_scan_time = db.get_last_scan_time().unwrap_or(None);
 
-    // Get last scan ID if available
-    let scan_id = db.get_metadata("last_scan_id").ok().flatten();
-
-    // Get scan start time if available
+    // Get scan times from metadata
     let start_time = db.get_metadata("last_scan_start_time").ok().flatten();
-
-    // Get scan stop time if available
     let stop_time = db.get_metadata("last_scan_stop_time").ok().flatten();
 
     HttpResponse::Ok().json(json!({
-        "status": status,
+        "status": controller_status,
+        "is_running": is_running,
+        "scan_id": scan_id,
+        "db_status": db_status,
         "current_round": current_round,
         "last_scan_time": last_scan_time,
-        "scan_id": scan_id,
         "start_time": start_time,
         "stop_time": stop_time,
         "next_scheduled_scan": null

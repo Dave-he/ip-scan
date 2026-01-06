@@ -4,7 +4,7 @@
 //! statistics, and controlling the scanner.
 
 mod handlers;
-mod models;
+pub mod models;
 mod routes;
 
 use actix_web::web;
