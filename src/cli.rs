@@ -130,7 +130,6 @@ pub struct Args {
 
     #[arg(long, env = "SCAN_RATE_WINDOW_S", default_value = "1")]
     pub rate_window_secs: u64,
-
 }
 
 #[derive(Debug, Deserialize)]

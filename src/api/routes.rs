@@ -1,9 +1,9 @@
 //! API route definitions
-//! 
+//!
 //! This module defines all API routes and their configurations.
 
 use actix_web::web;
-use utoipa::{OpenApi, IntoParams};
+use utoipa::{IntoParams, OpenApi};
 
 use crate::api::handlers;
 use crate::api::models;
@@ -15,7 +15,10 @@ pub fn config_results_routes(cfg: &mut web::ServiceConfig) {
             .route("", web::get().to(handlers::get_results))
             .route("/{ip}", web::get().to(handlers::get_results_by_ip))
             .route("/port/{port}", web::get().to(handlers::get_results_by_port))
-            .route("/round/{round}", web::get().to(handlers::get_results_by_round)),
+            .route(
+                "/round/{round}",
+                web::get().to(handlers::get_results_by_round),
+            ),
     );
 }
 

@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IP Scan Dashboard</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>IP Scan Dashboard</h1>
+            <div id="status-bar">
+                <span class="status-item">状态: <b id="scan-status">未知</b></span>
+                <span class="status-item">轮次: <b id="scan-round">-</b></span>
+            </div>
+        </header>
+
+        <section class="controls">
+            <button id="btn-start" onclick="startScan()" class="primary">开始扫描</button>
+            <button id="btn-stop" onclick="stopScan()" class="danger" disabled>停止扫描</button>
+        </section>
+
+        <section class="stats-cards">
+            <div class="card">
+                <h3>总结果数</h3>
+                <p id="stat-total">0</p>
+            </div>
+            <div class="card">
+                <h3>独立 IP 数</h3>
+                <p id="stat-unique">0</p>
+            </div>
+            <div class="card">
+                <h3>Top 端口</h3>
+                <p id="stat-top-port">-</p>
+            </div>
+        </section>
+
+        <div class="tabs">
+            <button class="tab-btn active" onclick="switchTab('results')">扫描结果</button>
+            <button class="tab-btn" onclick="switchTab('history')">扫描历史</button>
+        </div>
+
+        <section id="tab-results" class="tab-content active">
+            <div class="table-controls">
+                <button onclick="fetchResults(1)">刷新</button>
+                <button onclick="exportData('csv')">导出 CSV</button>
+            </div>
+            <div class="table-responsive">
+                <table id="results-table">
+                    <thead>
+                        <tr>
+                            <th>IP</th>
+                            <th>端口</th>
+                            <th>协议</th>
+                            <th>地理位置</th>
+                            <th>扫描轮次</th>
+                            <th>发现时间</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <!-- Populated by JS -->
+                    </tbody>
+                </table>
+            </div>
+            <div class="pagination">
+                <button onclick="changePage(-1)">上一页</button>
+                <span id="page-info">Page 1</span>
+                <button onclick="changePage(1)">下一页</button>
+            </div>
+        </section>
+
+        <section id="tab-history" class="tab-content">
+             <div class="table-controls">
+                <button onclick="fetchHistory()">刷新</button>
+             </div>
+             <div class="table-responsive">
+                <table id="history-table">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>开始时间</th>
+                            <th>结束时间</th>
+                            <th>状态</th>
+                            <th>配置</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <!-- Populated by JS -->
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    </div>
+    <script src="app.js"></script>
+</body>
+</html>

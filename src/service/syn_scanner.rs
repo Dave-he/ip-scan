@@ -15,8 +15,8 @@ use crate::model::ScanMetrics;
 use std::thread;
 use tokio::time::timeout;
 
-use rand::Rng;
 use pnet_datalink as datalink;
+use rand::Rng;
 
 pub struct SynScanner {
     tx: Arc<Mutex<transport::TransportSender>>,

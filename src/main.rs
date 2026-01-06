@@ -28,7 +28,6 @@ fn main() -> Result<()> {
 }
 
 async fn async_main(args: Args) -> Result<()> {
-
     // Initialize logging
     tracing_subscriber::fmt()
         .with_max_level(if args.verbose {
@@ -58,11 +57,11 @@ async fn async_main(args: Args) -> Result<()> {
 /// Run only the API server
 async fn run_api_server(args: &Args) -> Result<()> {
     info!("API Server starting on {}:{}", args.api_host, args.api_port);
-    
+
     // Initialize database
     let db = SqliteDB::new(&args.database)?;
     info!("Database initialized: {}", args.database);
-    
+
     // Start API server
     start_api_server(db, args).await
 }
@@ -98,87 +97,114 @@ async fn run_scanner(args: &Args) -> Result<()> {
 /// Run both scanner and API server
 async fn run_combined(args: &Args) -> Result<()> {
     info!("Starting combined scanner and API server");
-    
+
     // Initialize database
     let db = SqliteDB::new(&args.database)?;
     info!("Database initialized: {}", args.database);
-    
+
     // Start scanner in background
     let scanner_args = args.clone();
     let scanner_db = db.clone();
     let scanner_handle = tokio::spawn(async move {
-        let geo = if !scanner_args.no_geo { Some(GeoService::new(scanner_args.geoip_db.as_deref())) } else { None };
+        let geo = if !scanner_args.no_geo {
+            Some(GeoService::new(scanner_args.geoip_db.as_deref()))
+        } else {
+            None
+        };
         if let Err(e) = run_scanner_logic(scanner_db, &scanner_args, geo).await {
             error!("Scanner error: {}", e);
         }
     });
-    
+
     // Start API server
     let api_result = start_api_server(db, args).await;
-    
+
     // Wait for scanner to finish (if it ever does in loop mode)
     let _ = scanner_handle.await;
-    
+
     api_result
 }
 
 /// Start the API server
 async fn start_api_server(db: SqliteDB, args: &Args) -> Result<()> {
     use actix_cors::Cors;
+    use actix_files::Files;
     use actix_web::{web, App, HttpServer};
-    
+    use utoipa::OpenApi;
+
     let db_data = web::Data::new(db);
-    
+
     // Get OpenAPI documentation
     let openapi = api::ApiDoc::openapi();
-    
+
     // Copy necessary args fields for closure
     let swagger_ui_enabled = args.swagger_ui || args.api || args.api_only;
     let api_host = args.api_host.clone();
     let api_port = args.api_port;
-    
+
     info!("Starting HTTP server on {}:{}", api_host, api_port);
-    
+
     let mut server = HttpServer::new(move || {
         let cors = Cors::default()
             .allow_any_origin()
             .allow_any_method()
             .allow_any_header()
             .max_age(3600);
-        
+
         let mut app = App::new()
             .wrap(cors)
             .app_data(db_data.clone())
             .configure(api::init_routes);
-        
+
         if swagger_ui_enabled {
             let openapi_clone = openapi.clone();
-            app = app.route("/api-docs/openapi.json", web::get().to(move || {
-                let json = serde_json::to_string(&openapi_clone).unwrap_or_else(|_| "{}".to_string());
-                actix_web::HttpResponse::Ok().content_type("application/json").body(json)
-            }));
+            app = app.route(
+                "/api-docs/openapi.json",
+                web::get().to(move || {
+                    let openapi = openapi_clone.clone();
+                    async move {
+                        let json =
+                            serde_json::to_string(&openapi).unwrap_or_else(|_| "{}".to_string());
+                        actix_web::HttpResponse::Ok()
+                            .content_type("application/json")
+                            .body(json)
+                    }
+                }),
+            );
         }
-        
+
+        app = app.service(Files::new("/", "./web").index_file("index.html"));
+
         app
     });
-    
+
     // Bind to specified address and port
     server = server.bind((api_host.as_str(), api_port))?;
-    
+
     info!("API server started successfully");
-    info!("API endpoints: http://{}:{}/api/v1/", args.api_host, args.api_port);
-    info!("OpenAPI JSON: http://{}:{}/api-docs/openapi.json", args.api_host, args.api_port);
-    
+    info!(
+        "API endpoints: http://{}:{}/api/v1/",
+        args.api_host, args.api_port
+    );
+    info!(
+        "OpenAPI JSON: http://{}:{}/api-docs/openapi.json",
+        args.api_host, args.api_port
+    );
+
     server.run().await?;
-    
+
     Ok(())
 }
 
 /// Scanner logic (extracted from original main function)
-async fn run_scanner_logic(db: SqliteDB, args: &Args, geo_service: Option<GeoService>) -> Result<()> {
+async fn run_scanner_logic(
+    db: SqliteDB,
+    args: &Args,
+    geo_service: Option<GeoService>,
+) -> Result<()> {
     use model::{parse_port_range, IpRange};
     use service::{ConScanner, SynScanner};
-    
+
     // Check for previous scan progress
     let (mut current_round, resume_ip, resume_ip_type) = db
         .get_progress()?
@@ -252,7 +278,15 @@ async fn run_scanner_logic(db: SqliteDB, args: &Args, geo_service: Option<GeoSer
 
                     let metrics = if args.syn {
                         // SYN Scan Mode
-                        match SynScanner::new(db.clone(), current_round, args.result_buffer, args.db_batch_size, args.flush_interval_ms, args.max_rate, args.rate_window_secs) {
+                        match SynScanner::new(
+                            db.clone(),
+                            current_round,
+                            args.result_buffer,
+                            args.db_batch_size,
+                            args.flush_interval_ms,
+                            args.max_rate,
+                            args.rate_window_secs,
+                        ) {
                             Ok(scanner) => {
                                 scanner
                                     .run_pipeline(rx, ports.clone(), move |total_scanned| {
@@ -319,9 +353,9 @@ async fn run_scanner_logic(db: SqliteDB, args: &Args, geo_service: Option<GeoSer
 
         // Geolocation Enrichment
         if let Some(geo) = &geo_service {
-            // Process in batches to avoid holding up the loop too long, 
+            // Process in batches to avoid holding up the loop too long,
             // but enough to catch up with scanning speed eventually.
-            // Since we scan fast, we might accumulate many IPs. 
+            // Since we scan fast, we might accumulate many IPs.
             // Let's try to process up to 1000 per round for now.
             info!("Starting geolocation enrichment...");
             match db.get_ips_missing_geo(1000) {
@@ -329,7 +363,7 @@ async fn run_scanner_logic(db: SqliteDB, args: &Args, geo_service: Option<GeoSer
                     if !ips_to_enrich.is_empty() {
                         info!("Found {} IPs missing geolocation info", ips_to_enrich.len());
                         let mut enriched_count = 0;
-                        
+
                         for ip in ips_to_enrich {
                             // Add a small delay to respect API rate limits if using API
                             // Ideally this should be handled inside GeoService or RateLimiter

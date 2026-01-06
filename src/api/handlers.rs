@@ -1,5 +1,5 @@
 //! API request handlers
-//! 
+//!
 //! This module contains the request handlers for all API endpoints.
 
 use actix_web::{web, HttpResponse, Responder};
@@ -7,8 +7,8 @@ use serde_json::json;
 use tracing::{error, info};
 use utoipa::IntoParams;
 
-use crate::dao::SqliteDB;
 use crate::api::models::*;
+use crate::dao::SqliteDB;
 
 /// Get paginated scan results with filtering
 #[utoipa::path(
@@ -44,16 +44,19 @@ pub async fn get_results(
     ) {
         Ok((results, total)) => {
             let total_pages = (total + query.pagination.page_size - 1) / query.pagination.page_size;
-            
-            let api_results: Vec<ScanResult> = results.into_iter().map(|r| ScanResult {
-                ip_address: r.ip_address,
-                ip_type: r.ip_type,
-                port: r.port,
-                scan_round: r.scan_round,
-                first_seen: r.first_seen,
-                last_seen: r.last_seen,
-            }).collect();
-            
+
+            let api_results: Vec<ScanResult> = results
+                .into_iter()
+                .map(|r| ScanResult {
+                    ip_address: r.ip_address,
+                    ip_type: r.ip_type,
+                    port: r.port,
+                    scan_round: r.scan_round,
+                    first_seen: r.first_seen,
+                    last_seen: r.last_seen,
+                })
+                .collect();
+
             HttpResponse::Ok().json(PaginatedResults {
                 results: api_results,
                 total,
@@ -86,10 +89,7 @@ pub async fn get_results(
     ),
     tag = "Results"
 )]
-pub async fn get_results_by_ip(
-    db: web::Data<SqliteDB>,
-    ip: web::Path<String>,
-) -> impl Responder {
+pub async fn get_results_by_ip(db: web::Data<SqliteDB>, ip: web::Path<String>) -> impl Responder {
     match db.get_results_by_ip(&ip) {
         Ok(results) => {
             if results.is_empty() {
@@ -98,15 +98,18 @@ pub async fn get_results_by_ip(
                     code: Some("IP_NOT_FOUND".to_string()),
                 })
             } else {
-                let api_results: Vec<ScanResult> = results.into_iter().map(|r| ScanResult {
-                    ip_address: r.ip_address,
-                    ip_type: r.ip_type,
-                    port: r.port,
-                    scan_round: r.scan_round,
-                    first_seen: r.first_seen,
-                    last_seen: r.last_seen,
-                }).collect();
-                
+                let api_results: Vec<ScanResult> = results
+                    .into_iter()
+                    .map(|r| ScanResult {
+                        ip_address: r.ip_address,
+                        ip_type: r.ip_type,
+                        port: r.port,
+                        scan_round: r.scan_round,
+                        first_seen: r.first_seen,
+                        last_seen: r.last_seen,
+                    })
+                    .collect();
+
                 HttpResponse::Ok().json(api_results)
             }
         }
@@ -134,10 +137,7 @@ pub async fn get_results_by_ip(
     ),
     tag = "Results"
 )]
-pub async fn get_results_by_port(
-    db: web::Data<SqliteDB>,
-    port: web::Path<u16>,
-) -> impl Responder {
+pub async fn get_results_by_port(db: web::Data<SqliteDB>, port: web::Path<u16>) -> impl Responder {
     match db.get_results_by_port(*port) {
         Ok(results) => {
             if results.is_empty() {
@@ -146,15 +146,18 @@ pub async fn get_results_by_port(
                     code: Some("PORT_NOT_FOUND".to_string()),
                 })
             } else {
-                let api_results: Vec<ScanResult> = results.into_iter().map(|r| ScanResult {
-                    ip_address: r.ip_address,
-                    ip_type: r.ip_type,
-                    port: r.port,
-                    scan_round: r.scan_round,
-                    first_seen: r.first_seen,
-                    last_seen: r.last_seen,
-                }).collect();
-                
+                let api_results: Vec<ScanResult> = results
+                    .into_iter()
+                    .map(|r| ScanResult {
+                        ip_address: r.ip_address,
+                        ip_type: r.ip_type,
+                        port: r.port,
+                        scan_round: r.scan_round,
+                        first_seen: r.first_seen,
+                        last_seen: r.last_seen,
+                    })
+                    .collect();
+
                 HttpResponse::Ok().json(api_results)
             }
         }
@@ -194,15 +197,18 @@ pub async fn get_results_by_round(
                     code: Some("ROUND_NOT_FOUND".to_string()),
                 })
             } else {
-                let api_results: Vec<ScanResult> = results.into_iter().map(|r| ScanResult {
-                    ip_address: r.ip_address,
-                    ip_type: r.ip_type,
-                    port: r.port,
-                    scan_round: r.scan_round,
-                    first_seen: r.first_seen,
-                    last_seen: r.last_seen,
-                }).collect();
-                
+                let api_results: Vec<ScanResult> = results
+                    .into_iter()
+                    .map(|r| ScanResult {
+                        ip_address: r.ip_address,
+                        ip_type: r.ip_type,
+                        port: r.port,
+                        scan_round: r.scan_round,
+                        first_seen: r.first_seen,
+                        last_seen: r.last_seen,
+                    })
+                    .collect();
+
                 HttpResponse::Ok().json(api_results)
             }
         }
@@ -231,10 +237,10 @@ pub async fn get_stats(db: web::Data<SqliteDB>) -> impl Responder {
         Ok((total_open_records, unique_ips)) => {
             let memory_usage_bytes = db.get_memory_usage().unwrap_or(0);
             let memory_usage_mb = memory_usage_bytes as f64 / 1024.0 / 1024.0;
-            
+
             let current_round = db.get_current_round().unwrap_or(1);
             let last_scan_time = db.get_last_scan_time().unwrap_or(None);
-            
+
             HttpResponse::Ok().json(StatsResponse {
                 total_open_records,
                 unique_ips,
@@ -272,32 +278,35 @@ pub async fn get_top_ports(
     limit: web::Query<Option<usize>>,
 ) -> impl Responder {
     let limit = limit.into_inner().unwrap_or(10);
-    
+
     if limit == 0 || limit > 100 {
         return HttpResponse::BadRequest().json(ErrorResponse {
             error: "Limit must be between 1 and 100".to_string(),
             code: Some("INVALID_LIMIT".to_string()),
         });
     }
-    
+
     match db.get_top_ports(limit) {
         Ok(port_stats) => {
             let total_open_ports: usize = port_stats.iter().map(|(_, count)| count).sum();
-            
-            let ports: Vec<PortStats> = port_stats.into_iter().map(|(port, count)| {
-                let percentage = if total_open_ports > 0 {
-                    (count as f64 / total_open_ports as f64) * 100.0
-                } else {
-                    0.0
-                };
-                
-                PortStats {
-                    port,
-                    open_count: count,
-                    percentage,
-                }
-            }).collect();
-            
+
+            let ports: Vec<PortStats> = port_stats
+                .into_iter()
+                .map(|(port, count)| {
+                    let percentage = if total_open_ports > 0 {
+                        (count as f64 / total_open_ports as f64) * 100.0
+                    } else {
+                        0.0
+                    };
+
+                    PortStats {
+                        port,
+                        open_count: count,
+                        percentage,
+                    }
+                })
+                .collect();
+
             HttpResponse::Ok().json(TopPortsResponse {
                 ports,
                 total_open_ports,
@@ -414,7 +423,10 @@ pub async fn export_csv(
     // For now, return a placeholder
     HttpResponse::Ok()
         .content_type("text/csv")
-        .append_header(("Content-Disposition", "attachment; filename=\"scan_results.csv\""))
+        .append_header((
+            "Content-Disposition",
+            "attachment; filename=\"scan_results.csv\"",
+        ))
         .body("ip_address,ip_type,port,scan_round,first_seen,last_seen\n")
 }
 

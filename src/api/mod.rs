@@ -1,5 +1,5 @@
 //! API module for exposing scan results
-//! 
+//!
 //! This module provides REST API endpoints for accessing scan results,
 //! statistics, and controlling the scanner.
 

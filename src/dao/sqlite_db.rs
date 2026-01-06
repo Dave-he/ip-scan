@@ -134,12 +134,13 @@ impl SqliteDB {
         let mut stmt = conn.prepare(
             "SELECT DISTINCT ip_address FROM open_ports_detail 
              WHERE ip_address NOT IN (SELECT ip_address FROM ip_details)
-             LIMIT ?1"
+             LIMIT ?1",
         )?;
 
-        let ips = stmt.query_map([limit], |row| row.get(0))?
+        let ips = stmt
+            .query_map([limit], |row| row.get(0))?
             .collect::<Result<Vec<String>, _>>()?;
-            
+
         Ok(ips)
     }
 
@@ -397,45 +398,46 @@ impl SqliteDB {
         ip_type_filter: Option<&str>,
     ) -> Result<(Vec<ScanResultDetail>, usize)> {
         let conn = self.conn.lock().unwrap();
-        
+
         // Build WHERE clause
         let mut where_clauses = Vec::new();
         let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
-        
+
         if let Some(ip) = ip_filter {
             where_clauses.push("ip_address LIKE ?");
             params.push(Box::new(format!("%{}%", ip)));
         }
-        
+
         if let Some(port) = port_filter {
             where_clauses.push("port = ?");
             params.push(Box::new(port));
         }
-        
+
         if let Some(round) = round_filter {
             where_clauses.push("scan_round = ?");
             params.push(Box::new(round));
         }
-        
+
         if let Some(ip_type) = ip_type_filter {
             where_clauses.push("ip_type = ?");
             params.push(Box::new(ip_type));
         }
-        
+
         let where_clause = if where_clauses.is_empty() {
             "".to_string()
         } else {
             format!("WHERE {}", where_clauses.join(" AND "))
         };
-        
+
         // Get total count
-        let count_query = format!(
-            "SELECT COUNT(*) FROM open_ports_detail {}",
-            where_clause
-        );
-        
-        let total: i64 = conn.query_row(&count_query, params.iter().map(|p| &**p).collect::<Vec<_>>().as_slice(), |row| row.get(0))?;
-        
+        let count_query = format!("SELECT COUNT(*) FROM open_ports_detail {}", where_clause);
+
+        let total: i64 = conn.query_row(
+            &count_query,
+            params.iter().map(|p| &**p).collect::<Vec<_>>().as_slice(),
+            |row| row.get(0),
+        )?;
+
         // Get paginated results
         let offset = (page - 1) * page_size;
         let query = format!(
@@ -446,17 +448,50 @@ impl SqliteDB {
              LIMIT ? OFFSET ?",
             where_clause
         );
-        
+
         let mut stmt = conn.prepare(&query)?;
-        
+
         // Add LIMIT and OFFSET parameters
         let mut all_params: Vec<Box<dyn rusqlite::ToSql>> = params;
         all_params.push(Box::new(page_size as i64));
         all_params.push(Box::new(offset as i64));
-        
-        let results = stmt.query_map(
-            all_params.iter().map(|p| &**p).collect::<Vec<_>>().as_slice(),
-            |row| {
+
+        let results = stmt
+            .query_map(
+                all_params
+                    .iter()
+                    .map(|p| &**p)
+                    .collect::<Vec<_>>()
+                    .as_slice(),
+                |row| {
+                    Ok(ScanResultDetail {
+                        ip_address: row.get(0)?,
+                        ip_type: row.get(1)?,
+                        port: row.get(2)?,
+                        scan_round: row.get(3)?,
+                        first_seen: row.get(4)?,
+                        last_seen: row.get(5)?,
+                    })
+                },
+            )?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok((results, total as usize))
+    }
+
+    /// Get scan results for a specific IP
+    pub fn get_results_by_ip(&self, ip: &str) -> Result<Vec<ScanResultDetail>> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT ip_address, ip_type, port, scan_round, first_seen, last_seen 
+             FROM open_ports_detail 
+             WHERE ip_address = ? 
+             ORDER BY port",
+        )?;
+
+        let results = stmt
+            .query_map([ip], |row| {
                 Ok(ScanResultDetail {
                     ip_address: row.get(0)?,
                     ip_type: row.get(1)?,
@@ -465,121 +500,95 @@ impl SqliteDB {
                     first_seen: row.get(4)?,
                     last_seen: row.get(5)?,
                 })
-            },
-        )?
-        .collect::<Result<Vec<_>, _>>()?;
-        
-        Ok((results, total as usize))
-    }
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
 
-    /// Get scan results for a specific IP
-    pub fn get_results_by_ip(&self, ip: &str) -> Result<Vec<ScanResultDetail>> {
-        let conn = self.conn.lock().unwrap();
-        
-        let mut stmt = conn.prepare(
-            "SELECT ip_address, ip_type, port, scan_round, first_seen, last_seen 
-             FROM open_ports_detail 
-             WHERE ip_address = ? 
-             ORDER BY port"
-        )?;
-        
-        let results = stmt.query_map([ip], |row| {
-            Ok(ScanResultDetail {
-                ip_address: row.get(0)?,
-                ip_type: row.get(1)?,
-                port: row.get(2)?,
-                scan_round: row.get(3)?,
-                first_seen: row.get(4)?,
-                last_seen: row.get(5)?,
-            })
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-        
         Ok(results)
     }
 
     /// Get scan results for a specific port
     pub fn get_results_by_port(&self, port: u16) -> Result<Vec<ScanResultDetail>> {
         let conn = self.conn.lock().unwrap();
-        
+
         let mut stmt = conn.prepare(
             "SELECT ip_address, ip_type, port, scan_round, first_seen, last_seen 
              FROM open_ports_detail 
              WHERE port = ? 
-             ORDER BY last_seen DESC, ip_address"
+             ORDER BY last_seen DESC, ip_address",
         )?;
-        
-        let results = stmt.query_map([port], |row| {
-            Ok(ScanResultDetail {
-                ip_address: row.get(0)?,
-                ip_type: row.get(1)?,
-                port: row.get(2)?,
-                scan_round: row.get(3)?,
-                first_seen: row.get(4)?,
-                last_seen: row.get(5)?,
-            })
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-        
+
+        let results = stmt
+            .query_map([port], |row| {
+                Ok(ScanResultDetail {
+                    ip_address: row.get(0)?,
+                    ip_type: row.get(1)?,
+                    port: row.get(2)?,
+                    scan_round: row.get(3)?,
+                    first_seen: row.get(4)?,
+                    last_seen: row.get(5)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
         Ok(results)
     }
 
     /// Get scan results for a specific round
     pub fn get_results_by_round(&self, round: i64) -> Result<Vec<ScanResultDetail>> {
         let conn = self.conn.lock().unwrap();
-        
+
         let mut stmt = conn.prepare(
             "SELECT ip_address, ip_type, port, scan_round, first_seen, last_seen 
              FROM open_ports_detail 
              WHERE scan_round = ? 
-             ORDER BY ip_address, port"
+             ORDER BY ip_address, port",
         )?;
-        
-        let results = stmt.query_map([round], |row| {
-            Ok(ScanResultDetail {
-                ip_address: row.get(0)?,
-                ip_type: row.get(1)?,
-                port: row.get(2)?,
-                scan_round: row.get(3)?,
-                first_seen: row.get(4)?,
-                last_seen: row.get(5)?,
-            })
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-        
+
+        let results = stmt
+            .query_map([round], |row| {
+                Ok(ScanResultDetail {
+                    ip_address: row.get(0)?,
+                    ip_type: row.get(1)?,
+                    port: row.get(2)?,
+                    scan_round: row.get(3)?,
+                    first_seen: row.get(4)?,
+                    last_seen: row.get(5)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
         Ok(results)
     }
 
     /// Get top ports statistics
     pub fn get_top_ports(&self, limit: usize) -> Result<Vec<(u16, usize)>> {
         let conn = self.conn.lock().unwrap();
-        
+
         let mut stmt = conn.prepare(
             "SELECT port, COUNT(*) as count 
              FROM open_ports_detail 
              GROUP BY port 
              ORDER BY count DESC 
-             LIMIT ?"
+             LIMIT ?",
         )?;
-        
-        let results = stmt.query_map([limit as i64], |row| {
-            Ok((row.get::<_, u16>(0)?, row.get::<_, i64>(1)? as usize))
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-        
+
+        let results = stmt
+            .query_map([limit as i64], |row| {
+                Ok((row.get::<_, u16>(0)?, row.get::<_, i64>(1)? as usize))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
         Ok(results)
     }
 
     /// Get last scan timestamp
     pub fn get_last_scan_time(&self) -> Result<Option<String>> {
         let conn = self.conn.lock().unwrap();
-        
-        let result = conn.query_row(
-            "SELECT MAX(last_updated) FROM port_bitmaps",
-            [],
-            |row| row.get(0),
-        );
-        
+
+        let result = conn.query_row("SELECT MAX(last_updated) FROM port_bitmaps", [], |row| {
+            row.get(0)
+        });
+
         match result {
             Ok(time) => Ok(Some(time)),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),

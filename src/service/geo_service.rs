@@ -2,9 +2,9 @@ use crate::model::IpGeoInfo;
 use anyhow::{Context, Result};
 use maxminddb::geoip2;
 use regex::Regex;
+use serde_json::Value;
 use std::net::IpAddr;
 use std::sync::Arc;
-use serde_json::Value;
 use whois_rust::{WhoIs, WhoIsLookupOptions};
 
 #[derive(Clone)]
@@ -15,13 +15,11 @@ pub struct GeoService {
 
 impl GeoService {
     pub fn new(db_path: Option<&str>) -> Self {
-        let reader = db_path.and_then(|path| {
-            match maxminddb::Reader::open_readfile(path) {
-                Ok(reader) => Some(Arc::new(reader)),
-                Err(e) => {
-                    eprintln!("Failed to open GeoIP database at {}: {}", path, e);
-                    None
-                }
+        let reader = db_path.and_then(|path| match maxminddb::Reader::open_readfile(path) {
+            Ok(reader) => Some(Arc::new(reader)),
+            Err(e) => {
+                eprintln!("Failed to open GeoIP database at {}: {}", path, e);
+                None
             }
         });
 
@@ -29,7 +27,7 @@ impl GeoService {
         let whois = match WhoIs::from_string(include_str!("../../servers.json")) {
             Ok(w) => Some(Arc::new(w)),
             Err(_) => {
-                // Try to create empty or handle error. 
+                // Try to create empty or handle error.
                 // Since we don't have servers.json file, we might need to rely on the crate's logic or a provided json string.
                 // whois-rust usually requires a servers.json content.
                 // Let's try to construct a minimal one or handle the error gracefully.
@@ -50,25 +48,25 @@ impl GeoService {
         // 1. Try MaxMind DB (Fastest, Local)
         if let Some(reader) = &self.reader {
             if let Ok(addr) = ip.parse::<IpAddr>() {
-                 if let Ok(city) = reader.lookup::<geoip2::City>(addr) {
-                     let mut info = IpGeoInfo::new(ip.to_string(), "MaxMind".to_string());
-                     
-                     if let Some(country) = city.country.and_then(|c| c.names) {
-                         info.country = country.get("en").map(|s| s.to_string());
-                     }
-                     if let Some(subdivisions) = city.subdivisions {
-                         if let Some(sub) = subdivisions.first() {
-                             if let Some(names) = &sub.names {
-                                 info.region = names.get("en").map(|s| s.to_string());
-                             }
-                         }
-                     }
-                     if let Some(city_record) = city.city.and_then(|c| c.names) {
-                         info.city = city_record.get("en").map(|s| s.to_string());
-                     }
-                     
-                     return Ok(info);
-                 }
+                if let Ok(city) = reader.lookup::<geoip2::City>(addr) {
+                    let mut info = IpGeoInfo::new(ip.to_string(), "MaxMind".to_string());
+
+                    if let Some(country) = city.country.and_then(|c| c.names) {
+                        info.country = country.get("en").map(|s| s.to_string());
+                    }
+                    if let Some(subdivisions) = city.subdivisions {
+                        if let Some(sub) = subdivisions.first() {
+                            if let Some(names) = &sub.names {
+                                info.region = names.get("en").map(|s| s.to_string());
+                            }
+                        }
+                    }
+                    if let Some(city_record) = city.city.and_then(|c| c.names) {
+                        info.city = city_record.get("en").map(|s| s.to_string());
+                    }
+
+                    return Ok(info);
+                }
             }
         }
 
@@ -97,22 +95,20 @@ impl GeoService {
         // If not, we might need to use spawn_blocking or just call it directly if it's not blocking (it likely is blocking I/O).
         // Actually, whois-rust 1.5 likely has synchronous `lookup`.
         // To avoid blocking the async runtime, we should wrap it in `spawn_blocking`.
-        
+
         // However, `WhoIs` struct might not be Send/Sync or easy to move.
         // Let's check `WhoIs` definition. It usually holds a map of servers.
-        
+
         let ip_string = ip.to_string();
         let whois_clone = whois.clone();
-        
-        let text = tokio::task::spawn_blocking(move || {
-            whois_clone.lookup(options)
-        }).await??;
-        
+
+        let text = tokio::task::spawn_blocking(move || whois_clone.lookup(options)).await??;
+
         let mut info = IpGeoInfo::new(ip_string, "Whois".to_string());
-        
+
         // Simple regex parsing for common fields
         // Note: Whois formats vary wildly. This is a best-effort approach.
-        
+
         // Country
         let re_country = Regex::new(r"(?mi)^(?:Country|country):\s*([a-zA-Z]{2})").unwrap();
         if let Some(caps) = re_country.captures(&text) {
@@ -148,9 +144,9 @@ impl GeoService {
             .json::<Value>()
             .await
             .context("Failed to parse API response")?;
-        
+
         let mut info = IpGeoInfo::new(ip.to_string(), "API (ip-api.com)".to_string());
-        
+
         if resp["status"].as_str() == Some("success") {
             info.country = resp["country"].as_str().map(|s| s.to_string());
             info.region = resp["regionName"].as_str().map(|s| s.to_string());
@@ -158,7 +154,7 @@ impl GeoService {
             info.isp = resp["isp"].as_str().map(|s| s.to_string());
             info.asn = resp["as"].as_str().map(|s| s.to_string());
         }
-        
+
         Ok(info)
     }
 }
@@ -173,7 +169,7 @@ mod tests {
         let service = GeoService::new(None);
         // Use Google DNS as a test case
         let result = service.lookup("8.8.8.8").await;
-        
+
         match result {
             Ok(info) => {
                 println!("Geo Info: {:?}", info);
