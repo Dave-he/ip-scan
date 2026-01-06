@@ -267,6 +267,7 @@ impl BitmapScanner {
     }
 
     // Deprecated: Kept for compatibility if needed, but run_pipeline is preferred
+    #[allow(dead_code)]
     pub async fn scan_range(
         &self,
         ips: Vec<IpAddr>,

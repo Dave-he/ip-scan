@@ -21,7 +21,9 @@ pub struct SynScanner {
     local_ip: Ipv4Addr,
     rate_limiter: RateLimiter,
     metrics: ScanMetrics,
+    #[allow(dead_code)]
     db: BitmapDatabase,
+    #[allow(dead_code)]
     scan_round: i64,
 }
 

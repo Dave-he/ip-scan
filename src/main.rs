@@ -85,7 +85,7 @@ async fn main() -> Result<()> {
                     let start_time = std::time::Instant::now();
                     
                     // Pipeline Channel
-                    let (tx, mut rx) = tokio::sync::mpsc::channel(2000);
+                    let (tx, rx) = tokio::sync::mpsc::channel(2000);
                     
                     // Producer Task
                     let args_clone = args.clone();

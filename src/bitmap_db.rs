@@ -67,6 +67,7 @@ impl BitmapDatabase {
         })
     }
 
+    #[allow(dead_code)]
     pub fn set_port_status(&self, ip: &str, port: u16, is_open: bool, scan_round: i64) -> Result<()> {
         let ip_index = ipv4_to_index(ip)?;
         let conn = self.conn.lock().unwrap();
