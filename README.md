@@ -480,6 +480,8 @@ ip-scan/
 | 数据库 | Rusqlite | SQLite绑定 |
 | 日志 | Tracing | 结构化日志记录 |
 | 容器化 | Docker | 简化部署 |
+| Web框架 | Actix-web | REST API服务 |
+| API文档 | Utoipa + Swagger UI | OpenAPI文档生成 |
 
 ### 核心工作流程
 
@@ -1106,6 +1108,242 @@ SOFTWARE.
 - [Clap](https://github.com/clap-rs/clap) - 命令行解析
 - [Rusqlite](https://github.com/rusqlite/rusqlite) - SQLite 绑定
 - [Tracing](https://github.com/tokio-rs/tracing) - 日志框架
+
+## 🌐 REST API 接口
+
+IP-Scan 提供了完整的 REST API 接口，允许其他服务或用户通过 HTTP 访问扫描结果、控制扫描任务和导出数据。
+
+### API 运行模式
+
+IP-Scan 支持三种运行模式：
+
+1. **纯扫描模式** (默认): `./ip-scan` 或 `./ip-scan --no-api`
+2. **纯 API 模式**: `./ip-scan --api-only`
+3. **混合模式**: `./ip-scan --api` (同时运行扫描器和API服务器)
+
+### 启动 API 服务器
+
+```bash
+# 启动纯 API 服务器 (端口 8080)
+./ip-scan --api-only
+
+# 自定义端口和主机
+./ip-scan --api-only --api-port 3000 --api-host 0.0.0.0
+
+# 启用 Swagger UI
+./ip-scan --api-only --swagger-ui
+
+# 同时运行扫描器和 API
+./ip-scan --api --start-ip 192.168.1.1 --end-ip 192.168.1.254 --ports 22,80,443
+```
+
+### API 端点
+
+所有 API 端点都以 `/api/v1/` 为前缀。
+
+#### 1. 扫描结果查询
+
+| 方法 | 端点 | 描述 | 参数 |
+|------|------|------|------|
+| GET | `/api/v1/results` | 获取分页的扫描结果 | `page`, `page_size`, `ip`, `port`, `round`, `ip_type` |
+| GET | `/api/v1/results/{ip}` | 获取特定IP的扫描结果 | - |
+| GET | `/api/v1/results/port/{port}` | 获取特定端口的扫描结果 | - |
+| GET | `/api/v1/results/round/{round}` | 获取特定扫描轮次的结果 | - |
+
+#### 2. 统计信息
+
+| 方法 | 端点 | 描述 |
+|------|------|------|
+| GET | `/api/v1/stats` | 获取总体统计信息 |
+| GET | `/api/v1/stats/top-ports` | 获取热门端口统计 |
+
+#### 3. 扫描控制
+
+| 方法 | 端点 | 描述 | 请求体 |
+|------|------|------|--------|
+| POST | `/api/v1/scan/start` | 启动扫描任务 | `StartScanRequest` |
+| POST | `/api/v1/scan/stop` | 停止扫描任务 | - |
+| GET | `/api/v1/scan/status` | 获取扫描状态 | - |
+| GET | `/api/v1/scan/history` | 获取扫描历史 | - |
+
+#### 4. 数据导出
+
+| 方法 | 端点 | 描述 | 格式 |
+|------|------|------|------|
+| GET | `/api/v1/export/csv` | 导出为 CSV | `text/csv` |
+| GET | `/api/v1/export/json` | 导出为 JSON | `application/json` |
+| GET | `/api/v1/export/ndjson` | 导出为 NDJSON | `application/x-ndjson` |
+
+### API 使用示例
+
+#### 查询扫描结果
+
+```bash
+# 获取第一页结果 (每页50条)
+curl "http://localhost:8080/api/v1/results?page=1&page_size=50"
+
+# 搜索特定IP
+curl "http://localhost:8080/api/v1/results?ip=192.168.1"
+
+# 获取端口80的扫描结果
+curl "http://localhost:8080/api/v1/results/port/80"
+
+# 获取统计信息
+curl "http://localhost:8080/api/v1/stats"
+```
+
+#### 启动扫描任务
+
+```bash
+curl -X POST "http://localhost:8080/api/v1/scan/start" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "start_ip": "192.168.1.1",
+    "end_ip": "192.168.1.254",
+    "ports": "22,80,443",
+    "timeout": 500,
+    "concurrency": 50,
+    "syn": false,
+    "skip_private": false
+  }'
+```
+
+#### 导出数据
+
+```bash
+# 导出为 CSV
+curl "http://localhost:8080/api/v1/export/csv" -o scan_results.csv
+
+# 导出为 JSON
+curl "http://localhost:8080/api/v1/export/json" -o scan_results.json
+```
+
+### Swagger UI
+
+当启用 Swagger UI 时，可以通过浏览器访问交互式 API 文档：
+
+```
+http://localhost:8080/swagger-ui/
+```
+
+Swagger UI 提供了：
+- 完整的 API 文档
+- 交互式 API 测试
+- 请求/响应示例
+- 模型定义
+
+### 响应格式
+
+#### 成功响应示例
+
+```json
+{
+  "results": [
+    {
+      "ip_address": "192.168.1.1",
+      "ip_type": "IPv4",
+      "port": 80,
+      "scan_round": 1,
+      "first_seen": "2024-01-06T08:00:00Z",
+      "last_seen": "2024-01-06T08:00:00Z"
+    }
+  ],
+  "total": 100,
+  "page": 1,
+  "page_size": 50,
+  "total_pages": 2
+}
+```
+
+#### 错误响应示例
+
+```json
+{
+  "error": "Invalid page number",
+  "code": "INVALID_PAGINATION"
+}
+```
+
+### 数据模型
+
+#### ScanResult
+```json
+{
+  "ip_address": "string",
+  "ip_type": "string",
+  "port": 0,
+  "scan_round": 0,
+  "first_seen": "string",
+  "last_seen": "string"
+}
+```
+
+#### StatsResponse
+```json
+{
+  "total_open_records": 0,
+  "unique_ips": 0,
+  "memory_usage_mb": 0.0,
+  "current_round": 0,
+  "last_scan_time": "string"
+}
+```
+
+#### StartScanRequest
+```json
+{
+  "start_ip": "string",
+  "end_ip": "string",
+  "ports": "string",
+  "timeout": 0,
+  "concurrency": 0,
+  "syn": false,
+  "skip_private": false
+}
+```
+
+### 部署建议
+
+#### 生产环境部署
+
+```yaml
+# docker-compose.prod.yml
+version: '3.8'
+services:
+  scanner:
+    build: .
+    command: ["./ip-scan", "--no-api", "--loop-mode"]
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+  
+  api:
+    build: .
+    command: ["./ip-scan", "--api-only", "--api-port", "8080"]
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      - scanner
+    restart: unless-stopped
+    environment:
+      - RUST_LOG=info
+```
+
+#### 性能优化
+
+1. **数据库连接池**: API 服务器使用连接池管理数据库连接
+2. **响应缓存**: 考虑添加 Redis 缓存层用于频繁查询
+3. **负载均衡**: 多个 API 实例可以共享同一个数据库
+4. **CORS 配置**: 默认允许所有来源，生产环境应限制来源
+
+### 安全考虑
+
+1. **认证授权**: 当前版本未实现认证，生产环境应添加 API 密钥或 JWT 认证
+2. **速率限制**: 考虑在 API 网关层添加速率限制
+3. **输入验证**: 所有输入参数都经过验证
+4. **SQL 注入防护**: 使用参数化查询防止 SQL 注入
 
 ## 📚 相关资源
 
