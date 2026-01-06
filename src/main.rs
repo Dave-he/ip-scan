@@ -11,7 +11,6 @@ use cli::Args;
 use dao::SqliteDB;
 use model::{IpRange, parse_port_range};
 use service::ConScanner;
-#[cfg(feature = "syn")]
 use service::SynScanner;
 
 #[tokio::main]
@@ -79,7 +78,7 @@ async fn main() -> Result<()> {
                     let start_time = std::time::Instant::now();
                     
                     // Pipeline Channel
-                    let (tx, mut rx) = tokio::sync::mpsc::channel(2000);
+                    let (tx, rx) = tokio::sync::mpsc::channel(2000);
                     
                     // Producer Task
                     let args_clone = args.clone();
@@ -98,7 +97,6 @@ async fn main() -> Result<()> {
                     // Consumer (Scanner)
                     let current_round_clone = current_round;
                     
-                    #[cfg(feature = "syn")]
                     let metrics = if args.syn {
                         // SYN Scan Mode
                         match SynScanner::new(db.clone(), current_round) {
@@ -119,25 +117,6 @@ async fn main() -> Result<()> {
                         }
                     } else {
                         // Connect Scan Mode
-                        let scanner = ConScanner::new(db.clone(), args.timeout, args.concurrency, current_round);
-                        scanner.run_pipeline(rx, ports.clone(), move |total_scanned| {
-                            if total_scanned % 1000 == 0 {
-                                let elapsed = start_time.elapsed().as_secs_f64();
-                                let rate = total_scanned as f64 / elapsed;
-                                info!("IPv4 Progress [R{}]: {} IPs - {:.2} IPs/sec", current_round_clone, total_scanned, rate);
-                            }
-                        }).await?;
-                        scanner.get_metrics().clone()
-                    };
-
-                    #[cfg(not(feature = "syn"))]
-                    let metrics = {
-                        if args.syn {
-                            error!("SYN scan requested but feature is not enabled. Recompile with --features syn");
-                            // Drain RX to unblock producer if any
-                            while rx.recv().await.is_some() {} 
-                            return Err(anyhow::anyhow!("SYN scan feature disabled"));
-                        }
                         let scanner = ConScanner::new(db.clone(), args.timeout, args.concurrency, current_round);
                         scanner.run_pipeline(rx, ports.clone(), move |total_scanned| {
                             if total_scanned % 1000 == 0 {

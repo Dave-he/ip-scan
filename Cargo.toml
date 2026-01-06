@@ -14,12 +14,11 @@ chrono = "0.4"
 bincode = "1.3"
 serde = { version = "1.0", features = ["derive"] }
 toml = "0.8"
-pnet = { version = "0.34", optional = true }
-rand = { version = "0.8", optional = true }
+pnet = "0.34"
+rand = "0.8"
 
 [features]
 default = []
-syn = ["dep:pnet", "dep:rand"]
 
 [profile.release]
 opt-level = 3

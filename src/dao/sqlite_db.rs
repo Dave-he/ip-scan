@@ -300,7 +300,7 @@ mod tests {
     #[test]
     fn test_database_operations() {
         // Use in-memory database for testing
-        let db = BitmapDatabase::new(":memory:").unwrap();
+        let db = SqliteDB::new(":memory:").unwrap();
         
         // Test initial state
         let (scanned, open) = db.get_stats().unwrap();
