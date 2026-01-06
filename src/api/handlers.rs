@@ -376,14 +376,7 @@ pub async fn start_scan(
     // Create scan controller
     let controller = ScanController::new(db.get_ref().clone());
 
-    // Validate request parameters
-    if request.ports.is_none() && request.start_ip.is_none() && request.end_ip.is_none() {
-        return HttpResponse::BadRequest().json(ErrorResponse {
-            error: "Either ports or IP range must be specified".to_string(),
-            code: Some("INVALID_PARAMETERS".to_string()),
-        });
-    }
-
+    // No strict validation - allow empty request, will use defaults
     match controller.start_scan(request.into_inner(), &base_args).await {
         Ok(scan_id) => {
             HttpResponse::Ok().json(json!({
