@@ -4,8 +4,7 @@
 
 use actix_web::{web, HttpResponse, Responder};
 use serde_json::json;
-use tracing::{error, info};
-use utoipa::IntoParams;
+use tracing::error;
 
 use crate::api::models::*;
 use crate::dao::SqliteDB;
@@ -43,7 +42,7 @@ pub async fn get_results(
         query.filter.ip_type.as_deref(),
     ) {
         Ok((results, total)) => {
-            let total_pages = (total + query.pagination.page_size - 1) / query.pagination.page_size;
+            let total_pages = total.div_ceil(query.pagination.page_size);
 
             let api_results: Vec<ScanResult> = results
                 .into_iter()

@@ -7,10 +7,6 @@ mod handlers;
 mod models;
 mod routes;
 
-pub use handlers::*;
-pub use models::*;
-pub use routes::*;
-
 use actix_web::web;
 
 /// Initialize API routes

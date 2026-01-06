@@ -25,32 +25,33 @@ pub struct ConScanner {
     result_tx: mpsc::Sender<(String, u16, bool)>,
 }
 
-impl ConScanner {
-    pub fn new(
-        db: SqliteDB,
-        timeout_ms: u64,
-        concurrent_limit: usize,
-        scan_round: i64,
-        result_buffer: usize,
-        db_batch_size: usize,
-        flush_interval_ms: u64,
-        max_rate: u64,
-        rate_window_secs: u64,
-    ) -> Self {
-        let rate_limiter =
-            RateLimiter::new(max_rate as usize, Duration::from_secs(rate_window_secs));
+#[derive(Clone)]
+pub struct ConScannerConfig {
+    pub timeout_ms: u64,
+    pub concurrent_limit: usize,
+    pub result_buffer: usize,
+    pub db_batch_size: usize,
+    pub flush_interval_ms: u64,
+    pub max_rate: u64,
+    pub rate_window_secs: u64,
+}
 
-        let (tx, rx) = mpsc::channel(result_buffer);
+impl ConScanner {
+    pub fn new(db: SqliteDB, scan_round: i64, config: ConScannerConfig) -> Self {
+        let rate_limiter =
+            RateLimiter::new(config.max_rate as usize, Duration::from_secs(config.rate_window_secs));
+
+        let (tx, rx) = mpsc::channel(config.result_buffer);
 
         let db_clone = db.clone();
         tokio::spawn(async move {
-            Self::run_db_writer(rx, db_clone, scan_round, db_batch_size, flush_interval_ms).await;
+            Self::run_db_writer(rx, db_clone, scan_round, config.db_batch_size, config.flush_interval_ms).await;
         });
 
         ConScanner {
             db,
-            timeout_ms,
-            concurrent_limit,
+            timeout_ms: config.timeout_ms,
+            concurrent_limit: config.concurrent_limit,
             scan_round,
             scanned_count: Arc::new(AtomicUsize::new(0)),
             metrics: ScanMetrics::new(),
@@ -76,12 +77,9 @@ impl ConScanner {
             match result {
                 Ok(Some(item)) => {
                     buffer.push(item);
+                    // Flush when buffer is full
                     if buffer.len() >= batch_size {
-                        if let Err(e) =
-                            db.bulk_update_port_status(std::mem::take(&mut buffer), round)
-                        {
-                            error!("Failed to bulk update port status: {}", e);
-                        }
+                        Self::flush_buffer(&db, &mut buffer, round);
                         last_flush = Instant::now();
                     }
                 }
@@ -89,18 +87,23 @@ impl ConScanner {
                 Err(_) => {}
             }
 
+            // Flush on timer
             if !buffer.is_empty() && last_flush.elapsed() >= flush_interval {
-                if let Err(e) = db.bulk_update_port_status(std::mem::take(&mut buffer), round) {
-                    error!("Failed to bulk update port status (timer): {}", e);
-                }
+                Self::flush_buffer(&db, &mut buffer, round);
                 last_flush = Instant::now();
             }
         }
 
+        // Final flush
         if !buffer.is_empty() {
-            if let Err(e) = db.bulk_update_port_status(buffer, round) {
-                error!("Failed to final bulk update port status: {}", e);
-            }
+            Self::flush_buffer(&db, &mut buffer, round);
+        }
+    }
+
+    #[inline]
+    fn flush_buffer(db: &SqliteDB, buffer: &mut Vec<(String, u16, bool)>, round: i64) {
+        if let Err(e) = db.bulk_update_port_status(std::mem::take(buffer), round) {
+            error!("Failed to bulk update port status: {}", e);
         }
     }
 
@@ -142,7 +145,7 @@ impl ConScanner {
     }
 
     pub async fn scan_ip_ports(&self, ip: IpAddr, ports: Vec<u16>) -> Result<Vec<u16>> {
-        let mut open_ports = Vec::new();
+        let mut open_ports = Vec::with_capacity(ports.len() / 10); // Pre-allocate assuming ~10% open rate
         let semaphore = Arc::new(tokio::sync::Semaphore::new(self.concurrent_limit));
         let ip_str = ip.to_string();
         let ip_type = Self::get_ip_type(&ip);
@@ -310,7 +313,16 @@ mod tests {
 
         // Create scanner
         let db = SqliteDB::new(":memory:").unwrap();
-        let scanner = ConScanner::new(db, 500, 10, 1);
+        let config = ConScannerConfig {
+            timeout_ms: 500,
+            concurrent_limit: 10,
+            result_buffer: 100,
+            db_batch_size: 100,
+            flush_interval_ms: 1000,
+            max_rate: 10000,
+            rate_window_secs: 1,
+        };
+        let scanner = ConScanner::new(db, 1, config);
 
         // Spawn server accept loop
         tokio::spawn(async move { while (listener.accept().await).is_ok() {} });
@@ -344,7 +356,16 @@ mod tests {
         drop(closed_listener);
 
         let db = SqliteDB::new(":memory:").unwrap();
-        let scanner = ConScanner::new(db.clone(), 500, 10, 1);
+        let config = ConScannerConfig {
+            timeout_ms: 500,
+            concurrent_limit: 10,
+            result_buffer: 100,
+            db_batch_size: 100,
+            flush_interval_ms: 1000,
+            max_rate: 10000,
+            rate_window_secs: 1,
+        };
+        let scanner = ConScanner::new(db.clone(), 1, config);
         let ip: IpAddr = "127.0.0.1".parse().unwrap();
 
         let ports = vec![port, closed_port];

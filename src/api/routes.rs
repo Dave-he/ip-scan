@@ -3,7 +3,7 @@
 //! This module defines all API routes and their configurations.
 
 use actix_web::web;
-use utoipa::{IntoParams, OpenApi};
+use utoipa::OpenApi;
 
 use crate::api::handlers;
 use crate::api::models;

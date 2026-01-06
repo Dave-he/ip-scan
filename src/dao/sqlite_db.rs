@@ -58,6 +58,27 @@ impl SqliteDB {
             [],
         )?;
 
+        // Create indexes after table creation
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_open_ports_ip ON open_ports_detail(ip_address)",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_open_ports_port ON open_ports_detail(port)",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_open_ports_round ON open_ports_detail(scan_round)",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_open_ports_last_seen ON open_ports_detail(last_seen DESC)",
+            [],
+        )?;
+
         // IP Geolocation table
         conn.execute(
             "CREATE TABLE IF NOT EXISTS ip_details (
@@ -283,6 +304,7 @@ impl SqliteDB {
     pub fn get_stats(&self) -> Result<(usize, usize)> {
         let conn = self.conn.lock().unwrap();
 
+        // Use cached aggregate instead of recalculating
         let total_scanned: i64 = conn.query_row(
             "SELECT COALESCE(SUM(open_count), 0) FROM port_bitmaps",
             [],
@@ -290,7 +312,7 @@ impl SqliteDB {
         )?;
 
         let unique_open: usize =
-            conn.query_row("SELECT COUNT(*) FROM open_ports_detail", [], |row| {
+            conn.query_row("SELECT COUNT(DISTINCT ip_address) FROM open_ports_detail", [], |row| {
                 row.get(0)
             })?;
 

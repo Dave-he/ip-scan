@@ -142,6 +142,7 @@ pub struct ResultsQuery {
 
 /// Start scan request
 #[derive(Debug, Deserialize, ToSchema)]
+#[allow(dead_code)]
 pub struct StartScanRequest {
     /// Start IP address
     pub start_ip: Option<String>,
@@ -193,11 +194,6 @@ fn default_concurrency() -> usize {
 }
 
 impl PaginationQuery {
-    /// Calculate offset for SQL query
-    pub fn offset(&self) -> usize {
-        (self.page - 1) * self.page_size
-    }
-
     /// Validate pagination parameters
     pub fn validate(&self) -> Result<(), String> {
         if self.page < 1 {

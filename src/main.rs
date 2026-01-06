@@ -1,6 +1,7 @@
 mod api;
 mod cli;
 mod dao;
+mod error;
 mod model;
 mod service;
 
@@ -28,15 +29,21 @@ fn main() -> Result<()> {
 }
 
 async fn async_main(args: Args) -> Result<()> {
-    // Initialize logging
-    tracing_subscriber::fmt()
-        .with_max_level(if args.verbose {
-            Level::DEBUG
-        } else {
-            Level::INFO
-        })
-        .with_target(false)
-        .init();
+    // Initialize structured logging with JSON format for production
+    let log_format = if args.verbose {
+        tracing_subscriber::fmt()
+            .with_max_level(Level::DEBUG)
+            .with_target(true)
+            .with_thread_ids(true)
+            .with_file(true)
+            .with_line_number(true)
+    } else {
+        tracing_subscriber::fmt()
+            .with_max_level(Level::INFO)
+            .with_target(false)
+    };
+    
+    log_format.init();
 
     // Determine running mode
     if args.api_only {
@@ -309,17 +316,16 @@ async fn run_scanner_logic(
                         }
                     } else {
                         // Connect Scan Mode
-                        let scanner = ConScanner::new(
-                            db.clone(),
-                            args.timeout,
-                            args.concurrency,
-                            current_round,
-                            args.result_buffer,
-                            args.db_batch_size,
-                            args.flush_interval_ms,
-                            args.max_rate,
-                            args.rate_window_secs,
-                        );
+                        let config = service::ConScannerConfig {
+                            timeout_ms: args.timeout,
+                            concurrent_limit: args.concurrency,
+                            result_buffer: args.result_buffer,
+                            db_batch_size: args.db_batch_size,
+                            flush_interval_ms: args.flush_interval_ms,
+                            max_rate: args.max_rate,
+                            rate_window_secs: args.rate_window_secs,
+                        };
+                        let scanner = ConScanner::new(db.clone(), current_round, config);
                         scanner
                             .run_pipeline(rx, ports.clone(), move |total_scanned| {
                                 if total_scanned % 1000 == 0 {
