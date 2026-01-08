@@ -197,14 +197,23 @@ function toggleConfig() {
 
 async function stopScan() {
     if (!confirm('确定要停止当前扫描吗?')) return;
+    
     try {
-        await handleApiResponse(
-            await fetch(`${API_BASE}/scan/stop`, { method: 'POST' }),
-            '扫描停止请求已发送.'
-        );
-        fetchScanStatus();
+        const response = await fetch(`${API_BASE}/scan/stop`, { method: 'POST' });
+        
+        if (response.ok) {
+            // 成功时直接停止并更新页面状态，不显示提示
+            fetchScanStatus();
+        } else {
+            // 失败时才显示提示
+            const errorData = await response.json().catch(() => ({ error: 'An unknown error occurred.' }));
+            const errorMessage = errorData.error || `Request failed with status: ${response.status}`;
+            showToast(errorMessage, 'error');
+            console.error('API Error:', errorData);
+        }
     } catch (e) {
         console.error('Failed to stop scan:', e);
+        showToast('停止扫描失败: ' + e.message, 'error');
     }
 }
 
