@@ -7,32 +7,54 @@
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
+    <div id="toast-container"></div>
+    
     <div class="container">
         <header>
-            <h1>IP Scan Dashboard</h1>
+            <h1>🔍 IP 扫描控制台</h1>
             <div id="status-bar">
-                <span class="status-item">状态: <b id="scan-status">未知</b></span>
-                <span class="status-item">轮次: <b id="scan-round">-</b></span>
+                <span class="status-item">
+                    <span class="status-label">扫描状态</span>
+                    <span id="scan-status" class="status-badge status-unknown">未知</span>
+                </span>
+                <span class="status-item">
+                    <span class="status-label">当前轮次</span>
+                    <b id="scan-round">-</b>
+                </span>
+                <span class="status-item">
+                    <span class="status-label">扫描ID</span>
+                    <span id="scan-id" class="scan-id-text">-</span>
+                </span>
             </div>
         </header>
 
         <section class="controls">
-            <button id="btn-start" onclick="startScan()" class="primary">开始扫描</button>
-            <button id="btn-stop" onclick="stopScan()" class="danger" disabled>停止扫描</button>
+            <button id="btn-start" onclick="startScan()" class="btn-primary">
+                <span class="btn-icon">▶️</span> 开始扫描
+            </button>
+            <button id="btn-stop" onclick="stopScan()" class="btn-danger" disabled>
+                <span class="btn-icon">⏸️</span> 停止扫描
+            </button>
+            <button onclick="fetchResults(1)" class="btn-secondary">
+                <span class="btn-icon">🔄</span> 刷新数据
+            </button>
         </section>
 
         <section class="stats-cards">
             <div class="card">
-                <h3>总结果数</h3>
-                <p id="stat-total">0</p>
+                <div class="card-icon">📊</div>
+                <h3>总开放端口数</h3>
+                <p id="stat-total" class="stat-number">0</p>
             </div>
             <div class="card">
+                <div class="card-icon">🌐</div>
                 <h3>独立 IP 数</h3>
-                <p id="stat-unique">0</p>
+                <p id="stat-unique" class="stat-number">0</p>
             </div>
             <div class="card">
-                <h3>Top 端口</h3>
-                <p id="stat-top-port">-</p>
+                <div class="card-icon">🎯</div>
+                <h3>最热门端口</h3>
+                <p id="stat-top-port" class="stat-text">-</p>
             </div>
         </section>
 
@@ -43,19 +65,23 @@
 
         <section id="tab-results" class="tab-content active">
             <div class="table-controls">
-                <button onclick="fetchResults(1)">刷新</button>
-                <button onclick="exportData('csv')">导出 CSV</button>
+                <button onclick="exportData('csv')" class="btn-secondary">
+                    <span class="btn-icon">📄</span> 导出 CSV
+                </button>
+                 <button onclick="exportData('json')" class="btn-secondary">
+                    <span class="btn-icon">📄</span> 导出 JSON
+                </button>
             </div>
             <div class="table-responsive">
                 <table id="results-table">
                     <thead>
                         <tr>
-                            <th>IP</th>
+                            <th>IP 地址</th>
                             <th>端口</th>
-                            <th>协议</th>
+                            <th>类型</th>
                             <th>地理位置</th>
                             <th>扫描轮次</th>
-                            <th>发现时间</th>
+                            <th>首次发现时间</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -64,25 +90,27 @@
                 </table>
             </div>
             <div class="pagination">
-                <button onclick="changePage(-1)">上一页</button>
-                <span id="page-info">Page 1</span>
-                <button onclick="changePage(1)">下一页</button>
+                <button id="prev-page" onclick="changePage(-1)" disabled>上一页</button>
+                <span id="page-info">第 1 页</span>
+                <button id="next-page" onclick="changePage(1)" disabled>下一页</button>
             </div>
         </section>
 
         <section id="tab-history" class="tab-content">
              <div class="table-controls">
-                <button onclick="fetchHistory()">刷新</button>
+                <button onclick="fetchHistory()" class="btn-secondary">
+                    <span class="btn-icon">🔄</span> 刷新历史
+                </button>
              </div>
              <div class="table-responsive">
                 <table id="history-table">
                     <thead>
                         <tr>
-                            <th>ID</th>
+                            <th>扫描轮次</th>
                             <th>开始时间</th>
                             <th>结束时间</th>
                             <th>状态</th>
-                            <th>配置</th>
+                            <th>扫描详情</th>
                         </tr>
                     </thead>
                     <tbody>
