@@ -53,6 +53,8 @@ pub async fn get_results(
                     scan_round: r.scan_round,
                     first_seen: r.first_seen,
                     last_seen: r.last_seen,
+                    country: r.country,
+                    city: r.city,
                 })
                 .collect();
 
@@ -106,6 +108,8 @@ pub async fn get_results_by_ip(db: web::Data<SqliteDB>, ip: web::Path<String>) -
                         scan_round: r.scan_round,
                         first_seen: r.first_seen,
                         last_seen: r.last_seen,
+                        country: r.country,
+                        city: r.city,
                     })
                     .collect();
 
@@ -154,6 +158,8 @@ pub async fn get_results_by_port(db: web::Data<SqliteDB>, port: web::Path<u16>) 
                         scan_round: r.scan_round,
                         first_seen: r.first_seen,
                         last_seen: r.last_seen,
+                        country: r.country,
+                        city: r.city,
                     })
                     .collect();
 
@@ -205,6 +211,8 @@ pub async fn get_results_by_round(
                         scan_round: r.scan_round,
                         first_seen: r.first_seen,
                         last_seen: r.last_seen,
+                        country: r.country,
+                        city: r.city,
                     })
                     .collect();
 
@@ -337,7 +345,7 @@ pub async fn start_scan(
     request: web::Json<StartScanRequest>,
 ) -> impl Responder {
     use crate::cli::Args;
-    
+
     // Create a minimal base args for scan controller
     let base_args = Args {
         config_flag: None,
@@ -376,13 +384,14 @@ pub async fn start_scan(
     let controller_guard = controller.lock().unwrap();
 
     // No strict validation - allow empty request, will use defaults
-    match controller_guard.start_scan(request.into_inner(), &base_args).await {
-        Ok(scan_id) => {
-            HttpResponse::Ok().json(json!({
-                "scan_id": scan_id,
-                "message": "Scan started successfully"
-            }))
-        }
+    match controller_guard
+        .start_scan(request.into_inner(), &base_args)
+        .await
+    {
+        Ok(scan_id) => HttpResponse::Ok().json(json!({
+            "scan_id": scan_id,
+            "message": "Scan started successfully"
+        })),
         Err(e) => {
             error!("Failed to start scan: {}", e);
             HttpResponse::Conflict().json(ErrorResponse {
@@ -411,11 +420,9 @@ pub async fn stop_scan(
     let controller_guard = controller.lock().unwrap();
 
     match controller_guard.stop_scan().await {
-        Ok(()) => {
-            HttpResponse::Ok().json(json!({
-                "message": "Scan stopped successfully"
-            }))
-        }
+        Ok(()) => HttpResponse::Ok().json(json!({
+            "message": "Scan stopped successfully"
+        })),
         Err(e) => {
             error!("Failed to stop scan: {}", e);
             HttpResponse::NotFound().json(ErrorResponse {
@@ -442,7 +449,7 @@ pub async fn get_scan_status(
 ) -> impl Responder {
     // Get shared controller
     let controller_guard = controller.lock().unwrap();
-    
+
     // Get controller status
     let controller_status = controller_guard.get_status();
     let is_running = controller_guard.is_running();
@@ -526,7 +533,7 @@ pub async fn get_scan_history(db: web::Data<SqliteDB>) -> impl Responder {
 )]
 pub async fn export_csv(db: web::Data<SqliteDB>, query: web::Query<FilterQuery>) -> impl Responder {
     use futures::stream;
-    
+
     const BATCH_SIZE: usize = 1000;
     let db_clone = db.clone();
     let ip_filter = query.ip.clone();
@@ -534,63 +541,61 @@ pub async fn export_csv(db: web::Data<SqliteDB>, query: web::Query<FilterQuery>)
     let round_filter = query.round;
     let ip_type_filter = query.ip_type.clone();
 
-    let stream = stream::unfold(
-        (1usize, false, true),
-        move |(page, done, is_first)| {
-            let db = db_clone.clone();
-            let ip = ip_filter.clone();
-            let ip_type = ip_type_filter.clone();
+    let stream = stream::unfold((1usize, false, true), move |(page, done, is_first)| {
+        let db = db_clone.clone();
+        let ip = ip_filter.clone();
+        let ip_type = ip_type_filter.clone();
 
-            async move {
-                if done {
-                    return None;
+        async move {
+            if done {
+                return None;
+            }
+
+            match db.get_scan_results(
+                page,
+                BATCH_SIZE,
+                ip.as_deref(),
+                port_filter,
+                round_filter,
+                ip_type.as_deref(),
+            ) {
+                Ok((results, total)) => {
+                    if results.is_empty() {
+                        return None;
+                    }
+
+                    let mut csv_chunk = String::new();
+
+                    if is_first {
+                        csv_chunk
+                            .push_str("ip_address,ip_type,port,scan_round,first_seen,last_seen\n");
+                    }
+
+                    for result in results {
+                        csv_chunk.push_str(&format!(
+                            "{},{},{},{},{},{}\n",
+                            result.ip_address,
+                            result.ip_type,
+                            result.port,
+                            result.scan_round,
+                            result.first_seen,
+                            result.last_seen
+                        ));
+                    }
+
+                    let is_done = page * BATCH_SIZE >= total;
+                    Some((
+                        Ok::<_, actix_web::Error>(actix_web::web::Bytes::from(csv_chunk)),
+                        (page + 1, is_done, false),
+                    ))
                 }
-
-                match db.get_scan_results(
-                    page,
-                    BATCH_SIZE,
-                    ip.as_deref(),
-                    port_filter,
-                    round_filter,
-                    ip_type.as_deref(),
-                ) {
-                    Ok((results, total)) => {
-                        if results.is_empty() {
-                            return None;
-                        }
-
-                        let mut csv_chunk = String::new();
-
-                        if is_first {
-                            csv_chunk.push_str("ip_address,ip_type,port,scan_round,first_seen,last_seen\n");
-                        }
-
-                        for result in results {
-                            csv_chunk.push_str(&format!(
-                                "{},{},{},{},{},{}\n",
-                                result.ip_address,
-                                result.ip_type,
-                                result.port,
-                                result.scan_round,
-                                result.first_seen,
-                                result.last_seen
-                            ));
-                        }
-
-                        let is_done = page * BATCH_SIZE >= total;
-                        Some((
-                            Ok::<_, actix_web::Error>(actix_web::web::Bytes::from(csv_chunk)),
-                            (page + 1, is_done, false),
-                        ))
-                    }
-                    Err(e) => {
-                        error!("Failed to export CSV batch: {}", e);
-                        None
-                    }
+                Err(e) => {
+                    error!("Failed to export CSV batch: {}", e);
+                    None
                 }
             }
-        },
-    );
+        }
+    });
 
     HttpResponse::Ok()
         .content_type("text/csv")
@@ -618,7 +623,7 @@ pub async fn export_json(
 ) -> impl Responder {
     // Limit export to prevent OOM
     const MAX_EXPORT_SIZE: usize = 50000;
-    
+
     match db.get_scan_results(
         1,
         MAX_EXPORT_SIZE,
@@ -647,6 +652,8 @@ pub async fn export_json(
                     scan_round: r.scan_round,
                     first_seen: r.first_seen,
                     last_seen: r.last_seen,
+                    country: r.country,
+                    city: r.city,
                 })
                 .collect();
 
@@ -679,7 +686,7 @@ pub async fn export_ndjson(
 ) -> impl Responder {
     // Limit export to prevent OOM
     const MAX_EXPORT_SIZE: usize = 50000;
-    
+
     match db.get_scan_results(
         1,
         MAX_EXPORT_SIZE,

@@ -58,6 +58,14 @@ pub struct ScanResult {
 
     /// Last time this port was seen open
     pub last_seen: String,
+
+    /// Country (optional)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub country: Option<String>,
+
+    /// City (optional)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub city: Option<String>,
 }
 
 /// Paginated response for scan results

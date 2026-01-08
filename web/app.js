@@ -138,15 +138,31 @@ function updateStatusUI(data) {
 async function startScan() {
     if (!confirm('Are you sure you want to start a new scan?')) return;
     try {
-        await handleApiResponse(
-            await fetch(`${API_BASE}/scan/start`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({}) // Default config
-            }),
-            'Scan started successfully!'
-        );
-        fetchScanStatus();
+        const response = await fetch(`${API_BASE}/scan/start`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({}) // Default config
+        });
+
+        if (response.ok) {
+            showToast('Scan started successfully!', 'success');
+            fetchScanStatus();
+        } else {
+            const errorData = await response.json().catch(() => ({ error: 'An unknown error occurred.' }));
+            
+            // Check if error is "Scan is already running"
+            if (errorData.code === 'SCAN_START_FAILED' && 
+                errorData.error && 
+                errorData.error.toLowerCase().includes('already running')) {
+                // Silently update UI to reflect running state without showing error
+                fetchScanStatus();
+            } else {
+                // Show error for other failures
+                const errorMessage = errorData.error || `Request failed with status: ${response.status}`;
+                showToast(errorMessage, 'error');
+                console.error('API Error:', errorData);
+            }
+        }
     } catch (e) {
         console.error('Failed to start scan:', e);
     }
@@ -217,12 +233,12 @@ function renderTable(tbody, items, rowRenderer, colspan, emptyMessage) {
 function renderResultRow(item) {
     const tr = document.createElement('tr');
     tr.innerHTML = `
-        <td>${item.ip_address}</td>
-        <td>${item.port}</td>
+        <td>${item.ip_address || 'N/A'}</td>
+        <td>${item.port || 'N/A'}</td>
         <td>${item.ip_type || 'TCP'}</td>
         <td>${formatGeo(item)}</td>
-        <td>${item.scan_round}</td>
-        <td>${new Date(item.first_seen).toLocaleString()}</td>
+        <td>${item.scan_round || 'N/A'}</td>
+        <td>${item.first_seen ? new Date(item.first_seen).toLocaleString() : 'N/A'}</td>
     `;
     return tr;
 }
@@ -234,7 +250,7 @@ function renderHistoryRow(item) {
         <td>${item.start_time ? new Date(item.start_time).toLocaleString() : '-'}</td>
         <td>${item.end_time ? new Date(item.end_time).toLocaleString() : '-'}</td>
         <td>${item.status || 'Completed'}</td>
-        <td>${item.total_open_ports || 0} open ports, ${item.ports_scanned || 0} scanned</td>
+        <td>${(item.total_open_ports || 0)} open ports, ${(item.ports_scanned || 0)} scanned</td>
     `;
     return tr;
 }

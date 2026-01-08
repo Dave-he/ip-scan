@@ -134,15 +134,15 @@ async fn run_combined(args: &Args) -> Result<()> {
 
 /// Start the API server
 async fn start_api_server(db: SqliteDB, args: &Args) -> Result<()> {
+    use crate::service::ScanController;
     use actix_cors::Cors;
     use actix_files::Files;
     use actix_web::{web, App, HttpServer};
-    use utoipa::OpenApi;
     use std::sync::{Arc, Mutex};
-    use crate::service::ScanController;
+    use utoipa::OpenApi;
 
     let db_data = web::Data::new(db.clone());
-    
+
     // Create global scan controller singleton
     let scan_controller = Arc::new(Mutex::new(ScanController::new(db)));
     let controller_data = web::Data::new(scan_controller);
@@ -318,13 +318,15 @@ async fn run_scanner_logic(
                             }
                             Err(e) => {
                                 error!("Failed to initialize SYN scanner: {}", e);
-                                error!("提示: SYN 扫描需要 Root/Admin 权限。降级为普通连接扫描模式...");
+                                error!(
+                                    "提示: SYN 扫描需要 Root/Admin 权限。降级为普通连接扫描模式..."
+                                );
                                 info!("如需使用 SYN 扫描,请使用超级管理员权限重新运行程序:");
                                 #[cfg(target_os = "windows")]
                                 info!("  - Windows: 右键以管理员身份运行");
                                 #[cfg(not(target_os = "windows"))]
                                 info!("  - Linux/macOS: sudo ./ip-scan --syn ...");
-                                
+
                                 // 降级为连接扫描
                                 let config = service::ConScannerConfig {
                                     timeout_ms: args.timeout,

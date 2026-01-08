@@ -464,10 +464,12 @@ impl SqliteDB {
         // Get paginated results
         let offset = (page - 1) * page_size;
         let query = format!(
-            "SELECT ip_address, ip_type, port, scan_round, first_seen, last_seen 
-             FROM open_ports_detail 
+            "SELECT o.ip_address, o.ip_type, o.port, o.scan_round, o.first_seen, o.last_seen,
+                    i.country, i.city
+             FROM open_ports_detail o
+             LEFT JOIN ip_details i ON o.ip_address = i.ip_address
              {} 
-             ORDER BY last_seen DESC, ip_address, port 
+             ORDER BY o.last_seen DESC, o.ip_address, o.port 
              LIMIT ? OFFSET ?",
             where_clause
         );
@@ -494,6 +496,8 @@ impl SqliteDB {
                         scan_round: row.get(3)?,
                         first_seen: row.get(4)?,
                         last_seen: row.get(5)?,
+                        country: row.get(6)?,
+                        city: row.get(7)?,
                     })
                 },
             )?
@@ -507,10 +511,12 @@ impl SqliteDB {
         let conn = self.conn.lock().unwrap();
 
         let mut stmt = conn.prepare(
-            "SELECT ip_address, ip_type, port, scan_round, first_seen, last_seen 
-             FROM open_ports_detail 
-             WHERE ip_address = ? 
-             ORDER BY port",
+            "SELECT o.ip_address, o.ip_type, o.port, o.scan_round, o.first_seen, o.last_seen,
+                    i.country, i.city
+             FROM open_ports_detail o
+             LEFT JOIN ip_details i ON o.ip_address = i.ip_address
+             WHERE o.ip_address = ? 
+             ORDER BY o.port",
         )?;
 
         let results = stmt
@@ -522,6 +528,8 @@ impl SqliteDB {
                     scan_round: row.get(3)?,
                     first_seen: row.get(4)?,
                     last_seen: row.get(5)?,
+                    country: row.get(6)?,
+                    city: row.get(7)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -534,10 +542,12 @@ impl SqliteDB {
         let conn = self.conn.lock().unwrap();
 
         let mut stmt = conn.prepare(
-            "SELECT ip_address, ip_type, port, scan_round, first_seen, last_seen 
-             FROM open_ports_detail 
-             WHERE port = ? 
-             ORDER BY last_seen DESC, ip_address",
+            "SELECT o.ip_address, o.ip_type, o.port, o.scan_round, o.first_seen, o.last_seen,
+                    i.country, i.city
+             FROM open_ports_detail o
+             LEFT JOIN ip_details i ON o.ip_address = i.ip_address
+             WHERE o.port = ? 
+             ORDER BY o.last_seen DESC, o.ip_address",
         )?;
 
         let results = stmt
@@ -549,6 +559,8 @@ impl SqliteDB {
                     scan_round: row.get(3)?,
                     first_seen: row.get(4)?,
                     last_seen: row.get(5)?,
+                    country: row.get(6)?,
+                    city: row.get(7)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -561,10 +573,12 @@ impl SqliteDB {
         let conn = self.conn.lock().unwrap();
 
         let mut stmt = conn.prepare(
-            "SELECT ip_address, ip_type, port, scan_round, first_seen, last_seen 
-             FROM open_ports_detail 
-             WHERE scan_round = ? 
-             ORDER BY ip_address, port",
+            "SELECT o.ip_address, o.ip_type, o.port, o.scan_round, o.first_seen, o.last_seen,
+                    i.country, i.city
+             FROM open_ports_detail o
+             LEFT JOIN ip_details i ON o.ip_address = i.ip_address
+             WHERE o.scan_round = ? 
+             ORDER BY o.ip_address, o.port",
         )?;
 
         let results = stmt
@@ -576,6 +590,8 @@ impl SqliteDB {
                     scan_round: row.get(3)?,
                     first_seen: row.get(4)?,
                     last_seen: row.get(5)?,
+                    country: row.get(6)?,
+                    city: row.get(7)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -607,11 +623,9 @@ impl SqliteDB {
     /// Get total count of all open ports
     pub fn get_total_open_ports_count(&self) -> Result<usize> {
         let conn = self.conn.lock().unwrap();
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM open_ports_detail",
-            [],
-            |row| row.get(0),
-        )?;
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM open_ports_detail", [], |row| {
+            row.get(0)
+        })?;
         Ok(count as usize)
     }
 
@@ -643,7 +657,7 @@ impl SqliteDB {
              FROM port_bitmaps 
              GROUP BY scan_round 
              ORDER BY scan_round DESC 
-             LIMIT ?"
+             LIMIT ?",
         )?;
 
         let results = stmt
@@ -671,6 +685,8 @@ pub struct ScanResultDetail {
     pub scan_round: i64,
     pub first_seen: String,
     pub last_seen: String,
+    pub country: Option<String>,
+    pub city: Option<String>,
 }
 
 /// Scan history record

@@ -1,13 +1,13 @@
 :root {
-    --primary-color: #007bff;
-    --danger-color: #dc3545;
-    --success-color: #28a745;
-    --warning-color: #ffc107;
-    --bg-color: #f4f6f9;
-    --card-bg: #ffffff;
-    --text-color: #333;
-    --border-color: #e0e0e0;
-    --shadow-color: rgba(0, 0, 0, 0.08);
+    --primary-color: #00aeff;
+    --danger-color: #ff4757;
+    --success-color: #2ed573;
+    --warning-color: #ffa502;
+    --bg-color: #0d1117;
+    --card-bg: rgba(22, 27, 34, 0.85);
+    --text-color: #c9d1d9;
+    --border-color: #30363d;
+    --shadow-color: rgba(0, 0, 0, 0.2);
     --font-family: 'Segoe UI', 'Roboto', 'Helvetica Neue', Arial, sans-serif;
 }
 
@@ -18,12 +18,41 @@ body {
     margin: 0;
     padding: 20px;
     line-height: 1.6;
+    overflow: hidden;
+    position: relative;
+}
+
+body::before {
+    content: '';
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    z-index: -1;
+    background: url('https://www.transparenttextures.com/patterns/cubes.png'), 
+                linear-gradient(45deg, #0d1117, #161b22);
+    animation: background-pan 20s linear infinite;
+    opacity: 0.1;
+}
+
+@keyframes background-pan {
+    0% { background-position: 0% 0%; }
+    100% { background-position: 100% 100%; }
 }
 
 .container {
     max-width: 1400px;
     margin: 0 auto;
     padding: 0 20px;
+    position: relative;
+    z-index: 1;
+}
+
+header, .card, .tab-content {
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border: 1px solid var(--border-color);
 }
 
 header {

@@ -3,11 +3,11 @@
 //! This module provides functionality to control scan operations
 //! including start, stop, and status management.
 
-use crate::api::models::{StartScanRequest, ScanStatus};
+use crate::api::models::{ScanStatus, StartScanRequest};
 use crate::cli::Args;
 use crate::dao::SqliteDB;
-use crate::service::ConScanner;
 use crate::service::syn_scanner::SynScanner;
+use crate::service::ConScanner;
 use anyhow::{anyhow, Result};
 use chrono::Utc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -36,11 +36,7 @@ impl ScanController {
     }
 
     /// Start a new scan
-    pub async fn start_scan(
-        &self,
-        request: StartScanRequest,
-        base_args: &Args,
-    ) -> Result<String> {
+    pub async fn start_scan(&self, request: StartScanRequest, base_args: &Args) -> Result<String> {
         // Check if scan is already running
         {
             let status = self.scan_status.lock().unwrap();
@@ -68,7 +64,8 @@ impl ScanController {
         // Update database metadata
         self.db.save_metadata("scan_status", "starting")?;
         self.db.save_metadata("last_scan_id", &scan_id)?;
-        self.db.save_metadata("last_scan_start_time", &Utc::now().to_rfc3339())?;
+        self.db
+            .save_metadata("last_scan_start_time", &Utc::now().to_rfc3339())?;
 
         // Create scan arguments from request
         let scan_args = self.create_scan_args(request, base_args)?;
@@ -80,8 +77,9 @@ impl ScanController {
         let scan_id_clone = scan_id.clone();
 
         let handle = tokio::spawn(async move {
-            let result = Self::run_scan_task(db_clone, scan_args, scan_running, scan_status.clone()).await;
-            
+            let result =
+                Self::run_scan_task(db_clone, scan_args, scan_running, scan_status.clone()).await;
+
             // Update final status
             match result {
                 Ok(_) => {
@@ -93,7 +91,7 @@ impl ScanController {
                     *status = ScanStatus::Error(e.to_string());
                 }
             }
-            
+
             result
         });
 
@@ -147,16 +145,14 @@ impl ScanController {
 
         if let Some(handle) = handle {
             match tokio::time::timeout(tokio::time::Duration::from_secs(30), handle).await {
-                Ok(result) => {
-                    match result {
-                        Ok(_) => {
-                            info!("Scan stopped successfully");
-                        }
-                        Err(e) => {
-                            error!("Scan task failed: {}", e);
-                        }
+                Ok(result) => match result {
+                    Ok(_) => {
+                        info!("Scan stopped successfully");
                     }
-                }
+                    Err(e) => {
+                        error!("Scan task failed: {}", e);
+                    }
+                },
                 Err(_) => {
                     error!("Scan did not stop within 30 seconds, forcing stop");
                 }
@@ -169,7 +165,8 @@ impl ScanController {
             *status = ScanStatus::Stopped;
         }
         self.db.save_metadata("scan_status", "stopped")?;
-        self.db.save_metadata("last_scan_stop_time", &Utc::now().to_rfc3339())?;
+        self.db
+            .save_metadata("last_scan_stop_time", &Utc::now().to_rfc3339())?;
 
         Ok(())
     }
@@ -205,7 +202,7 @@ impl ScanController {
         if let Some(ports) = request.ports {
             args.ports = ports;
         }
-        
+
         args.timeout = request.timeout;
         args.concurrency = request.concurrency;
         args.syn = request.syn;
@@ -256,7 +253,7 @@ impl ScanController {
                             if !scan_running_clone.load(Ordering::SeqCst) {
                                 break;
                             }
-                            
+
                             if args_clone.skip_private && Args::is_private_ipv4(&ip.to_string()) {
                                 continue;
                             }
@@ -314,7 +311,9 @@ impl ScanController {
                 rate_window_secs: args.rate_window_secs,
             };
             let scanner = ConScanner::new(db.clone(), current_round, config);
-            scanner.run_pipeline(rx, ports.clone(), |_total_scanned| {}).await
+            scanner
+                .run_pipeline(rx, ports.clone(), |_total_scanned| {})
+                .await
         };
 
         // Wait for producer
