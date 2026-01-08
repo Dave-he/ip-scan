@@ -188,6 +188,8 @@ async function fetchResults(page) {
 
     try {
         const data = await handleApiResponse(await fetch(`${API_BASE}/results?page=${page}&page_size=${state.pageSize}`));
+        console.log('fetchResults received data:', data);
+        console.log('fetchResults data.results:', data.results);
         renderTable(tbody, data.results, renderResultRow, 6, 'No results found.');
         updatePagination(data.page, data.total_pages);
     } catch (e) {
@@ -219,9 +221,11 @@ function setTableError(tbody, colspan, message) {
 }
 
 function renderTable(tbody, items, rowRenderer, colspan, emptyMessage) {
+    console.log('renderTable called with items:', items);
     tbody.innerHTML = '';
     if (items && Array.isArray(items) && items.length > 0) {
-        items.forEach(item => {
+        items.forEach((item, index) => {
+            console.log(`renderTable item ${index}:`, item);
             const tr = rowRenderer(item);
             tbody.appendChild(tr);
         });
@@ -233,12 +237,12 @@ function renderTable(tbody, items, rowRenderer, colspan, emptyMessage) {
 function renderResultRow(item) {
     const tr = document.createElement('tr');
     tr.innerHTML = `
-        <td>${item.ip_address || 'N/A'}</td>
-        <td>${item.port || 'N/A'}</td>
-        <td>${item.ip_type || 'TCP'}</td>
+        <td>${item && item.ip_address ? item.ip_address : 'N/A'}</td>
+        <td>${item && item.port ? item.port : 'N/A'}</td>
+        <td>${item && item.ip_type ? item.ip_type : 'TCP'}</td>
         <td>${formatGeo(item)}</td>
-        <td>${item.scan_round || 'N/A'}</td>
-        <td>${item.first_seen ? new Date(item.first_seen).toLocaleString() : 'N/A'}</td>
+        <td>${item && item.scan_round ? item.scan_round : 'N/A'}</td>
+        <td>${item && item.first_seen ? new Date(item.first_seen).toLocaleString() : 'N/A'}</td>
     `;
     return tr;
 }
@@ -263,8 +267,11 @@ function updatePagination(page, totalPages) {
 }
 
 function formatGeo(item) {
-    if (!item.country && !item.city) return '-';
-    return [item.country, item.city].filter(Boolean).join(', ');
+    if (!item) return '-';
+    const country = item.country || '';
+    const city = item.city || '';
+    if (!country && !city) return '-';
+    return [country, city].filter(Boolean).join(', ');
 }
 
 function changePage(delta) {
