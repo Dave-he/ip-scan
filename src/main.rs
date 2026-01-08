@@ -138,8 +138,14 @@ async fn start_api_server(db: SqliteDB, args: &Args) -> Result<()> {
     use actix_files::Files;
     use actix_web::{web, App, HttpServer};
     use utoipa::OpenApi;
+    use std::sync::{Arc, Mutex};
+    use crate::service::ScanController;
 
-    let db_data = web::Data::new(db);
+    let db_data = web::Data::new(db.clone());
+    
+    // Create global scan controller singleton
+    let scan_controller = Arc::new(Mutex::new(ScanController::new(db)));
+    let controller_data = web::Data::new(scan_controller);
 
     // Get OpenAPI documentation
     let openapi = api::ApiDoc::openapi();
@@ -161,6 +167,7 @@ async fn start_api_server(db: SqliteDB, args: &Args) -> Result<()> {
         let mut app = App::new()
             .wrap(cors)
             .app_data(db_data.clone())
+            .app_data(controller_data.clone())
             .configure(api::init_routes);
 
         if swagger_ui_enabled {

@@ -333,10 +333,9 @@ pub async fn get_top_ports(
 
 /// Start a new scan
 pub async fn start_scan(
-    db: web::Data<SqliteDB>,
+    controller: web::Data<std::sync::Arc<std::sync::Mutex<crate::service::ScanController>>>,
     request: web::Json<StartScanRequest>,
 ) -> impl Responder {
-    use crate::service::ScanController;
     use crate::cli::Args;
     
     // Create a minimal base args for scan controller
@@ -373,11 +372,11 @@ pub async fn start_scan(
         swagger_ui: false,
     };
 
-    // Create scan controller
-    let controller = ScanController::new(db.get_ref().clone());
+    // Get shared controller
+    let controller_guard = controller.lock().unwrap();
 
     // No strict validation - allow empty request, will use defaults
-    match controller.start_scan(request.into_inner(), &base_args).await {
+    match controller_guard.start_scan(request.into_inner(), &base_args).await {
         Ok(scan_id) => {
             HttpResponse::Ok().json(json!({
                 "scan_id": scan_id,
@@ -405,13 +404,13 @@ pub async fn start_scan(
     ),
     tag = "Scan Control"
 )]
-pub async fn stop_scan(db: web::Data<SqliteDB>) -> impl Responder {
-    use crate::service::ScanController;
-    
-    // Create scan controller
-    let controller = ScanController::new(db.get_ref().clone());
+pub async fn stop_scan(
+    controller: web::Data<std::sync::Arc<std::sync::Mutex<crate::service::ScanController>>>,
+) -> impl Responder {
+    // Get shared controller
+    let controller_guard = controller.lock().unwrap();
 
-    match controller.stop_scan().await {
+    match controller_guard.stop_scan().await {
         Ok(()) => {
             HttpResponse::Ok().json(json!({
                 "message": "Scan stopped successfully"
@@ -437,16 +436,17 @@ pub async fn stop_scan(db: web::Data<SqliteDB>) -> impl Responder {
     ),
     tag = "Scan Control"
 )]
-pub async fn get_scan_status(db: web::Data<SqliteDB>) -> impl Responder {
-    use crate::service::ScanController;
-    
-    // Create scan controller
-    let controller = ScanController::new(db.get_ref().clone());
+pub async fn get_scan_status(
+    controller: web::Data<std::sync::Arc<std::sync::Mutex<crate::service::ScanController>>>,
+    db: web::Data<SqliteDB>,
+) -> impl Responder {
+    // Get shared controller
+    let controller_guard = controller.lock().unwrap();
     
     // Get controller status
-    let controller_status = controller.get_status();
-    let is_running = controller.is_running();
-    let scan_id = controller.get_scan_id();
+    let controller_status = controller_guard.get_status();
+    let is_running = controller_guard.is_running();
+    let scan_id = controller_guard.get_scan_id();
 
     // Get database metadata
     let db_status = db

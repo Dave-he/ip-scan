@@ -4,6 +4,8 @@ let currentPage = 1;
 const pageSize = 20;
 let statusInterval = null;
 
+let lastScanRunning = false;
+
 document.addEventListener('DOMContentLoaded', () => {
     fetchStats();
     fetchScanStatus();
@@ -14,8 +16,27 @@ document.addEventListener('DOMContentLoaded', () => {
     statusInterval = setInterval(() => {
         fetchScanStatus();
         fetchStats();
+        fetchResultsIfScanning();
     }, 2000);
 });
+
+function fetchResultsIfScanning() {
+    fetchScanStatus().then(() => {
+        const statusEl = document.getElementById('scan-status');
+        const isRunning = statusEl.textContent === 'Running';
+        
+        // If scan started or stopped, refresh results
+        if (isRunning !== lastScanRunning) {
+            fetchResults(currentPage);
+            lastScanRunning = isRunning;
+        } else if (isRunning) {
+            // While scanning, refresh results every 5 status polls (10 seconds)
+            if (Math.random() < 0.2) {
+                fetchResults(currentPage);
+            }
+        }
+    }).catch(e => console.error('Failed to check scan status:', e));
+}
 
 function switchTab(tabId) {
     document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
@@ -29,14 +50,14 @@ async function fetchStats() {
     try {
         const res = await fetch(`${API_BASE}/stats`);
         const data = await res.json();
-        document.getElementById('stat-total').textContent = data.total_results || 0;
-        document.getElementById('stat-unique').textContent = data.unique_open || 0;
+        document.getElementById('stat-total').textContent = data.total_open_records || 0;
+        document.getElementById('stat-unique').textContent = data.unique_ips || 0;
         
         // Fetch top ports
         const portRes = await fetch(`${API_BASE}/stats/top-ports`);
         const portData = await portRes.json();
-        if (portData && portData.length > 0) {
-            document.getElementById('stat-top-port').textContent = `${portData[0].port} (${portData[0].count})`;
+        if (portData && portData.ports && portData.ports.length > 0) {
+            document.getElementById('stat-top-port').textContent = `${portData.ports[0].port} (${portData.ports[0].open_count})`;
         }
     } catch (e) {
         console.error('Failed to fetch stats:', e);
@@ -53,12 +74,12 @@ async function fetchScanStatus() {
         const startBtn = document.getElementById('btn-start');
         const stopBtn = document.getElementById('btn-stop');
         
-        statusEl.textContent = data.running ? 'Running' : 'Stopped';
-        statusEl.style.color = data.running ? 'var(--success-color)' : 'var(--text-color)';
+        statusEl.textContent = data.is_running ? 'Running' : 'Stopped';
+        statusEl.style.color = data.is_running ? 'var(--success-color)' : 'var(--text-color)';
         roundEl.textContent = data.current_round || '-';
         
-        startBtn.disabled = data.running;
-        stopBtn.disabled = !data.running;
+        startBtn.disabled = data.is_running;
+        stopBtn.disabled = !data.is_running;
         
     } catch (e) {
         console.error('Failed to fetch status:', e);
@@ -100,8 +121,7 @@ async function stopScan() {
 async function fetchResults(page) {
     currentPage = page;
     try {
-        const offset = (page - 1) * pageSize;
-        const res = await fetch(`${API_BASE}/results?limit=${pageSize}&offset=${offset}`);
+        const res = await fetch(`${API_BASE}/results?page=${page}&page_size=${pageSize}`);
         const data = await res.json();
         
         const tbody = document.querySelector('#results-table tbody');
@@ -111,12 +131,12 @@ async function fetchResults(page) {
             data.results.forEach(item => {
                 const tr = document.createElement('tr');
                 tr.innerHTML = `
-                    <td>${item.ip}</td>
+                    <td>${item.ip_address}</td>
                     <td>${item.port}</td>
-                    <td>${item.transport || 'TCP'}</td>
-                    <td>${formatGeo(item)}</td>
-                    <td>${item.round}</td>
-                    <td>${new Date(item.timestamp * 1000).toLocaleString()}</td>
+                    <td>${item.ip_type || 'TCP'}</td>
+                    <td>-</td>
+                    <td>${item.scan_round}</td>
+                    <td>${new Date(item.first_seen).toLocaleString()}</td>
                 `;
                 tbody.appendChild(tr);
             });
@@ -152,19 +172,21 @@ async function fetchHistory() {
         const tbody = document.querySelector('#history-table tbody');
         tbody.innerHTML = '';
         
-        // Assuming history API returns a list
-        if (Array.isArray(data)) {
-            data.forEach(item => {
+        // API returns { scans: [...] }
+        if (data.scans && Array.isArray(data.scans)) {
+            data.scans.forEach(item => {
                 const tr = document.createElement('tr');
                 tr.innerHTML = `
-                    <td>${item.id || '-'}</td>
-                    <td>${item.start_time ? new Date(item.start_time * 1000).toLocaleString() : '-'}</td>
-                    <td>${item.end_time ? new Date(item.end_time * 1000).toLocaleString() : '-'}</td>
-                    <td>${item.status || '-'}</td>
-                    <td>${item.config || '-'}</td>
+                    <td>${item.round || '-'}</td>
+                    <td>${item.start_time ? new Date(item.start_time).toLocaleString() : '-'}</td>
+                    <td>${item.end_time ? new Date(item.end_time).toLocaleString() : '-'}</td>
+                    <td>Completed</td>
+                    <td>${item.total_open_ports || 0} open ports, ${item.ports_scanned || 0} scanned</td>
                 `;
                 tbody.appendChild(tr);
             });
+        } else {
+            tbody.innerHTML = '<tr><td colspan="5" style="text-align:center">No history found</td></tr>';
         }
     } catch (e) {
         console.error('Failed to fetch history:', e);
