@@ -318,7 +318,37 @@ async fn run_scanner_logic(
                             }
                             Err(e) => {
                                 error!("Failed to initialize SYN scanner: {}", e);
-                                return Err(e);
+                                error!("提示: SYN 扫描需要 Root/Admin 权限。降级为普通连接扫描模式...");
+                                info!("如需使用 SYN 扫描,请使用超级管理员权限重新运行程序:");
+                                #[cfg(target_os = "windows")]
+                                info!("  - Windows: 右键以管理员身份运行");
+                                #[cfg(not(target_os = "windows"))]
+                                info!("  - Linux/macOS: sudo ./ip-scan --syn ...");
+                                
+                                // 降级为连接扫描
+                                let config = service::ConScannerConfig {
+                                    timeout_ms: args.timeout,
+                                    concurrent_limit: args.concurrency,
+                                    result_buffer: args.result_buffer,
+                                    db_batch_size: args.db_batch_size,
+                                    flush_interval_ms: args.flush_interval_ms,
+                                    max_rate: args.max_rate,
+                                    rate_window_secs: args.rate_window_secs,
+                                };
+                                let scanner = ConScanner::new(db.clone(), current_round, config);
+                                scanner
+                                    .run_pipeline(rx, ports.clone(), move |total_scanned| {
+                                        if total_scanned % 1000 == 0 {
+                                            let elapsed = start_time.elapsed().as_secs_f64();
+                                            let rate = total_scanned as f64 / elapsed;
+                                            info!(
+                                                "IPv4 Progress [R{}]: {} IPs - {:.2} IPs/sec",
+                                                current_round_clone, total_scanned, rate
+                                            );
+                                        }
+                                    })
+                                    .await?;
+                                scanner.get_metrics().clone()
                             }
                         }
                     } else {
