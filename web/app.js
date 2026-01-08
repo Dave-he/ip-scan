@@ -91,11 +91,11 @@ async function fetchScanStatus() {
 
         // Smartly refresh data based on status change
         if (data.is_running && !state.lastStatus.is_running) {
-            showToast('Scan has started! Refreshing data.', 'info');
+            showToast('扫描已启动! 正在刷新数据.', 'info');
             fetchStats();
             fetchResults(1);
         } else if (!data.is_running && state.lastStatus.is_running) {
-            showToast('Scan has stopped. Fetching final results.', 'info');
+            showToast('扫描已停止. 正在获取最终结果.', 'info');
             fetchStats();
             fetchResults(1);
             fetchHistory();
@@ -136,16 +136,28 @@ function updateStatusUI(data) {
 
 // --- Actions ---
 async function startScan() {
-    if (!confirm('Are you sure you want to start a new scan?')) return;
+    if (!confirm('确定要开始新的扫描吗?')) return;
+    
+    // 收集配置参数
+    const config = {
+        start_ip: document.getElementById('start-ip').value || null,
+        end_ip: document.getElementById('end-ip').value || null,
+        ports: document.getElementById('ports').value || null,
+        timeout: parseInt(document.getElementById('timeout').value) || 500,
+        concurrency: parseInt(document.getElementById('concurrency').value) || 100,
+        skip_private: document.getElementById('skip-private').checked,
+        syn: false // 默认不启用SYN扫描
+    };
+    
     try {
         const response = await fetch(`${API_BASE}/scan/start`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({}) // Default config
+            body: JSON.stringify(config)
         });
 
         if (response.ok) {
-            showToast('Scan started successfully!', 'success');
+            showToast('扫描已启动!', 'success');
             fetchScanStatus();
         } else {
             const errorData = await response.json().catch(() => ({ error: 'An unknown error occurred.' }));
@@ -165,15 +177,30 @@ async function startScan() {
         }
     } catch (e) {
         console.error('Failed to start scan:', e);
+        showToast('启动扫描失败: ' + e.message, 'error');
+    }
+}
+
+// --- Config Panel Toggle ---
+function toggleConfig() {
+    const panel = document.getElementById('config-panel');
+    const toggleBtn = document.getElementById('btn-toggle');
+    
+    if (panel.classList.contains('collapsed')) {
+        panel.classList.remove('collapsed');
+        toggleBtn.classList.remove('collapsed');
+    } else {
+        panel.classList.add('collapsed');
+        toggleBtn.classList.add('collapsed');
     }
 }
 
 async function stopScan() {
-    if (!confirm('Are you sure you want to stop the current scan?')) return;
+    if (!confirm('确定要停止当前扫描吗?')) return;
     try {
         await handleApiResponse(
             await fetch(`${API_BASE}/scan/stop`, { method: 'POST' }),
-            'Scan stop request sent.'
+            '扫描停止请求已发送.'
         );
         fetchScanStatus();
     } catch (e) {
