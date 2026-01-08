@@ -45,20 +45,49 @@ async fn async_main(args: Args) -> Result<()> {
 
     log_format.init();
 
-    // Determine running mode
-    if args.api_only {
+    // Setup Ctrl+C handler
+    let shutdown_signal = tokio::signal::ctrl_c();
+
+    // Determine running mode and run with graceful shutdown
+    let result = if args.api_only {
         info!("Starting in API-only mode");
-        run_api_server(&args).await
+        tokio::select! {
+            result = run_api_server(&args) => result,
+            _ = shutdown_signal => {
+                info!("Received Ctrl+C, shutting down gracefully...");
+                Ok(())
+            }
+        }
     } else if args.no_api {
         info!("Starting in scanner-only mode");
-        run_scanner(&args).await
+        tokio::select! {
+            result = run_scanner(&args) => result,
+            _ = shutdown_signal => {
+                info!("Received Ctrl+C, shutting down gracefully...");
+                Ok(())
+            }
+        }
     } else if args.api {
         info!("Starting in combined mode (scanner + API)");
-        run_combined(&args).await
+        tokio::select! {
+            result = run_combined(&args) => result,
+            _ = shutdown_signal => {
+                info!("Received Ctrl+C, shutting down gracefully...");
+                Ok(())
+            }
+        }
     } else {
         info!("Starting in API-only mode (default)");
-        run_api_server(&args).await
-    }
+        tokio::select! {
+            result = run_api_server(&args) => result,
+            _ = shutdown_signal => {
+                info!("Received Ctrl+C, shutting down gracefully...");
+                Ok(())
+            }
+        }
+    };
+
+    result
 }
 
 /// Run only the API server
@@ -123,13 +152,19 @@ async fn run_combined(args: &Args) -> Result<()> {
         }
     });
 
-    // Start API server
-    let api_result = start_api_server(db, args).await;
+    // Start API server (in current task, not spawned)
+    let api_task = start_api_server(db, args);
 
-    // Wait for scanner to finish (if it ever does in loop mode)
-    let _ = scanner_handle.await;
-
-    api_result
+    // Wait for either scanner to complete or API server
+    tokio::select! {
+        _ = scanner_handle => {
+            info!("Scanner finished");
+            Ok(())
+        }
+        result = api_task => {
+            result
+        }
+    }
 }
 
 /// Start the API server
@@ -218,6 +253,20 @@ async fn run_scanner_logic(
 ) -> Result<()> {
     use model::{parse_port_range, IpRange};
     use service::{ConScanner, SynScanner};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    // Setup shutdown flag
+    let shutdown_flag = Arc::new(AtomicBool::new(false));
+    let shutdown_flag_clone = shutdown_flag.clone();
+
+    // Setup Ctrl+C handler for scanner
+    tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            info!("Scanner received Ctrl+C, initiating shutdown...");
+            shutdown_flag_clone.store(true, Ordering::SeqCst);
+        }
+    });
 
     // Check for previous scan progress
     let (mut current_round, resume_ip, resume_ip_type) = db
@@ -236,6 +285,12 @@ async fn run_scanner_logic(
     info!("Scanning {} ports: {:?}", ports.len(), ports);
 
     loop {
+        // Check shutdown flag
+        if shutdown_flag.load(Ordering::SeqCst) {
+            info!("Shutdown requested, exiting scan loop...");
+            break;
+        }
+
         info!("=== Starting scan round {} ===", current_round);
 
         // Scan IPv4 if enabled
