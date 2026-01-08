@@ -1,12 +1,17 @@
 const API_BASE = '/api/v1';
 
-let currentPage = 1;
-const pageSize = 20;
-let statusInterval = null;
-let lastStatus = { is_running: false };
+// --- State Management ---
+let state = {
+    currentPage: 1,
+    pageSize: 20,
+    statusInterval: null,
+    lastStatus: { is_running: false, status: 'Unknown' },
+    autoRefreshCounter: 0,
+    autoRefreshInterval: 5, // Refresh every 5 status checks (10 seconds)
+};
 
 // --- Toast Notification System ---
-function showToast(message, type = 'info') {
+function showToast(message, type = 'info', duration = 4000) {
     const container = document.getElementById('toast-container');
     const toast = document.createElement('div');
     toast.className = `toast ${type}`;
@@ -16,23 +21,24 @@ function showToast(message, type = 'info') {
     setTimeout(() => {
         toast.style.animation = 'slideOut 0.5s forwards';
         toast.addEventListener('animationend', () => toast.remove());
-    }, 4000);
+    }, duration);
 }
 
+// --- DOMContentLoaded Listener ---
 document.addEventListener('DOMContentLoaded', () => {
     switchTab('results');
-    fetchInitialData();
-    
-    statusInterval = setInterval(fetchScanStatus, 2000);
+    initializeDashboard();
+    state.statusInterval = setInterval(fetchScanStatus, 2000);
 });
 
-function fetchInitialData() {
+function initializeDashboard() {
     fetchScanStatus();
     fetchStats();
     fetchResults(1);
     fetchHistory();
 }
 
+// --- Tab Management ---
 function switchTab(tabId) {
     document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
     document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
@@ -41,34 +47,40 @@ function switchTab(tabId) {
     document.querySelector(`.tab-btn[onclick="switchTab('${tabId}')"]`).classList.add('active');
 }
 
+// --- API Handling ---
 async function handleApiResponse(response, successMessage) {
     if (response.ok) {
         if (successMessage) showToast(successMessage, 'success');
-        return await response.json();
+        // Handle cases with no JSON body
+        const contentType = response.headers.get("content-type");
+        if (contentType && contentType.indexOf("application/json") !== -1) {
+            return await response.json();
+        }
+        return {};
     } else {
-        const errorData = await response.json();
-        const errorMessage = errorData.error || `请求失败，状态码: ${response.status}`;
+        const errorData = await response.json().catch(() => ({ error: 'An unknown error occurred.' }));
+        const errorMessage = errorData.error || `Request failed with status: ${response.status}`;
         showToast(errorMessage, 'error');
         console.error('API Error:', errorData);
         throw new Error(errorMessage);
     }
 }
 
+// --- Data Fetching & UI Updates ---
 async function fetchStats() {
     try {
         const data = await handleApiResponse(await fetch(`${API_BASE}/stats`));
         document.getElementById('stat-total').textContent = data.total_open_records || 0;
         document.getElementById('stat-unique').textContent = data.unique_ips || 0;
         
-        const portRes = await fetch(`${API_BASE}/stats/top-ports`);
-        const portData = await handleApiResponse(portRes);
+        const portData = await handleApiResponse(await fetch(`${API_BASE}/stats/top-ports`));
         if (portData && portData.ports && portData.ports.length > 0) {
-            document.getElementById('stat-top-port').textContent = `${portData.ports[0].port} (${portData.ports[0].open_count}次)`;
+            document.getElementById('stat-top-port').textContent = `${portData.ports[0].port} (${portData.ports[0].open_count} times)`;
         } else {
-            document.getElementById('stat-top-port').textContent = '暂无数据';
+            document.getElementById('stat-top-port').textContent = 'No data';
         }
     } catch (e) {
-        console.error('获取统计数据失败:', e);
+        console.error('Failed to fetch stats:', e);
     }
 }
 
@@ -77,16 +89,30 @@ async function fetchScanStatus() {
         const data = await handleApiResponse(await fetch(`${API_BASE}/scan/status`));
         updateStatusUI(data);
 
-        // If status changed, refresh data
-        if (data.is_running !== lastStatus.is_running) {
+        // Smartly refresh data based on status change
+        if (data.is_running && !state.lastStatus.is_running) {
+            showToast('Scan has started! Refreshing data.', 'info');
             fetchStats();
             fetchResults(1);
+        } else if (!data.is_running && state.lastStatus.is_running) {
+            showToast('Scan has stopped. Fetching final results.', 'info');
+            fetchStats();
+            fetchResults(1);
+            fetchHistory();
+        } else if (data.is_running) {
+            // Auto-refresh results while running
+            state.autoRefreshCounter++;
+            if (state.autoRefreshCounter >= state.autoRefreshInterval) {
+                fetchResults(state.currentPage);
+                state.autoRefreshCounter = 0;
+            }
         }
-        lastStatus = data;
+        
+        state.lastStatus = data;
 
     } catch (e) {
         updateStatusUI({ status: 'Error', is_running: false });
-        console.error('获取扫描状态失败:', e);
+        console.error('Failed to fetch scan status:', e);
     }
 }
 
@@ -108,8 +134,9 @@ function updateStatusUI(data) {
     stopBtn.disabled = !data.is_running;
 }
 
+// --- Actions ---
 async function startScan() {
-    if (!confirm('确定要开始新的扫描吗？')) return;
+    if (!confirm('Are you sure you want to start a new scan?')) return;
     try {
         await handleApiResponse(
             await fetch(`${API_BASE}/scan/start`, {
@@ -117,109 +144,120 @@ async function startScan() {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({}) // Default config
             }),
-            '扫描已成功启动！'
+            'Scan started successfully!'
         );
         fetchScanStatus();
     } catch (e) {
-        console.error('启动扫描失败:', e);
+        console.error('Failed to start scan:', e);
     }
 }
 
 async function stopScan() {
-    if (!confirm('确定要停止当前扫描吗？')) return;
+    if (!confirm('Are you sure you want to stop the current scan?')) return;
     try {
         await handleApiResponse(
             await fetch(`${API_BASE}/scan/stop`, { method: 'POST' }),
-            '扫描停止请求已发送。'
+            'Scan stop request sent.'
         );
         fetchScanStatus();
     } catch (e) {
-        console.error('停止扫描失败:', e);
+        console.error('Failed to stop scan:', e);
     }
 }
 
 async function fetchResults(page) {
-    currentPage = page;
+    state.currentPage = page;
     const tbody = document.querySelector('#results-table tbody');
-    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center">正在加载...</td></tr>';
+    setTableLoading(tbody, 6);
 
     try {
-        const data = await handleApiResponse(await fetch(`${API_BASE}/results?page=${page}&page_size=${pageSize}`));
-        
-        tbody.innerHTML = ''; // Clear loading state
-        if (data.results && data.results.length > 0) {
-            data.results.forEach(item => {
-                const tr = document.createElement('tr');
-                tr.innerHTML = `
-                    <td>${item.ip_address}</td>
-                    <td>${item.port}</td>
-                    <td>${item.ip_type || 'TCP'}</td>
-                    <td>${formatGeo(item)}</td>
-                    <td>${item.scan_round}</td>
-                    <td>${new Date(item.first_seen).toLocaleString()}</td>
-                `;
-                tbody.appendChild(tr);
-            });
-        } else {
-            tbody.innerHTML = '<tr><td colspan="6" style="text-align:center">未找到任何结果。</td></tr>';
-        }
-        
+        const data = await handleApiResponse(await fetch(`${API_BASE}/results?page=${page}&page_size=${state.pageSize}`));
+        renderTable(tbody, data.results, renderResultRow, 6, 'No results found.');
         updatePagination(data.page, data.total_pages);
-        
     } catch (e) {
-        tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; color: var(--danger-color);">加载结果失败。</td></tr>';
-        console.error('获取扫描结果失败:', e);
+        setTableError(tbody, 6, 'Failed to load results.');
+        console.error('Failed to fetch results:', e);
     }
 }
 
+async function fetchHistory() {
+    const tbody = document.querySelector('#history-table tbody');
+    setTableLoading(tbody, 5);
+
+    try {
+        const data = await handleApiResponse(await fetch(`${API_BASE}/scan/history`));
+        renderTable(tbody, data.scans, renderHistoryRow, 5, 'No scan history found.');
+    } catch (e) {
+        setTableError(tbody, 5, 'Failed to load history.');
+        console.error('Failed to fetch history:', e);
+    }
+}
+
+// --- Table Rendering ---
+function setTableLoading(tbody, colspan) {
+    tbody.innerHTML = `<tr><td colspan="${colspan}" style="text-align:center">Loading...</td></tr>`;
+}
+
+function setTableError(tbody, colspan, message) {
+    tbody.innerHTML = `<tr><td colspan="${colspan}" style="text-align:center; color: var(--danger-color);">${message}</td></tr>`;
+}
+
+function renderTable(tbody, items, rowRenderer, colspan, emptyMessage) {
+    tbody.innerHTML = '';
+    if (items && Array.isArray(items) && items.length > 0) {
+        items.forEach(item => {
+            const tr = rowRenderer(item);
+            tbody.appendChild(tr);
+        });
+    } else {
+        tbody.innerHTML = `<tr><td colspan="${colspan}" style="text-align:center">${emptyMessage}</td></tr>`;
+    }
+}
+
+function renderResultRow(item) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+        <td>${item.ip_address}</td>
+        <td>${item.port}</td>
+        <td>${item.ip_type || 'TCP'}</td>
+        <td>${formatGeo(item)}</td>
+        <td>${item.scan_round}</td>
+        <td>${new Date(item.first_seen).toLocaleString()}</td>
+    `;
+    return tr;
+}
+
+function renderHistoryRow(item) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+        <td>${item.round || '-'}</td>
+        <td>${item.start_time ? new Date(item.start_time).toLocaleString() : '-'}</td>
+        <td>${item.end_time ? new Date(item.end_time).toLocaleString() : '-'}</td>
+        <td>${item.status || 'Completed'}</td>
+        <td>${item.total_open_ports || 0} open ports, ${item.ports_scanned || 0} scanned</td>
+    `;
+    return tr;
+}
+
+// --- UI Helpers ---
 function updatePagination(page, totalPages) {
-    document.getElementById('page-info').textContent = `第 ${page} / ${totalPages} 页`;
+    document.getElementById('page-info').textContent = `Page ${page} / ${totalPages}`;
     document.getElementById('prev-page').disabled = page <= 1;
     document.getElementById('next-page').disabled = page >= totalPages;
 }
 
 function formatGeo(item) {
     if (!item.country && !item.city) return '-';
-    let parts = [item.country, item.city].filter(Boolean);
-    return parts.join(', ');
+    return [item.country, item.city].filter(Boolean).join(', ');
 }
 
 function changePage(delta) {
-    const newPage = currentPage + delta;
+    const newPage = state.currentPage + delta;
     if (newPage < 1) return;
     fetchResults(newPage);
 }
 
-async function fetchHistory() {
-    const tbody = document.querySelector('#history-table tbody');
-    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center">正在加载...</td></tr>';
-
-    try {
-        const data = await handleApiResponse(await fetch(`${API_BASE}/scan/history`));
-        
-        tbody.innerHTML = '';
-        if (data.scans && Array.isArray(data.scans) && data.scans.length > 0) {
-            data.scans.forEach(item => {
-                const tr = document.createElement('tr');
-                tr.innerHTML = `
-                    <td>${item.round || '-'}</td>
-                    <td>${item.start_time ? new Date(item.start_time).toLocaleString() : '-'}</td>
-                    <td>${item.end_time ? new Date(item.end_time).toLocaleString() : '-'}</td>
-                    <td>${item.status || '已完成'}</td>
-                    <td>${item.total_open_ports || 0} 开放端口, ${item.ports_scanned || 0} 已扫描</td>
-                `;
-                tbody.appendChild(tr);
-            });
-        } else {
-            tbody.innerHTML = '<tr><td colspan="5" style="text-align:center">未找到任何扫描历史。</td></tr>';
-        }
-    } catch (e) {
-        tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; color: var(--danger-color);">加载历史失败。</td></tr>';
-        console.error('获取扫描历史失败:', e);
-    }
-}
-
 function exportData(format) {
-    showToast(`正在准备 ${format.toUpperCase()} 文件下载...`, 'info');
+    showToast(`Preparing ${format.toUpperCase()} file for download...`, 'info');
     window.open(`${API_BASE}/export/${format}`, '_blank');
 }
