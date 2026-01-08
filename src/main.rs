@@ -269,16 +269,31 @@ async fn run_scanner_logic(
     });
 
     // Check for previous scan progress
-    let (mut current_round, resume_ip, resume_ip_type) = db
-        .get_progress()?
-        .map(|(ip, ip_type, round)| {
-            info!("Resuming from: {} ({}) round {}", ip, ip_type, round);
-            (round, Some(ip), Some(ip_type))
-        })
-        .unwrap_or_else(|| {
-            info!("Starting fresh scan");
+    let (mut current_round, mut resume_ip, mut resume_ip_type) = match db.get_progress()? {
+        Some((ip, ip_type, round)) => {
+            info!("Found previous scan progress:");
+            info!("  Last IP: {} ({})", ip, ip_type);
+            info!("  Last Round: {}", round);
+            
+            // Check if this round was completed
+            let round_complete = db.get_metadata(&format!("round_{}_complete", round))?
+                .map(|v| v == "true")
+                .unwrap_or(false);
+            
+            if round_complete {
+                info!("Round {} was completed, starting new round", round);
+                let new_round = db.increment_round()?;
+                (new_round, None, None)
+            } else {
+                info!("Round {} was not completed, resuming from {}", round, ip);
+                (round, Some(ip), Some(ip_type))
+            }
+        }
+        None => {
+            info!("No previous scan progress found, starting fresh scan");
             (1, None, None)
-        });
+        }
+    };
 
     // Parse port range
     let ports = parse_port_range(&args.ports).map_err(|e| anyhow::anyhow!(e))?;
@@ -292,6 +307,9 @@ async fn run_scanner_logic(
         }
 
         info!("=== Starting scan round {} ===", current_round);
+        
+        // Mark round as in progress
+        db.save_metadata(&format!("round_{}_complete", current_round), "false")?;
 
         // Scan IPv4 if enabled
         if args.ipv4 {
@@ -446,6 +464,13 @@ async fn run_scanner_logic(
                         total_processed as f64 / start_time.elapsed().as_secs_f64()
                     );
                     metrics.print_summary();
+                    
+                    // Clear resume IP since IPv4 scan is complete
+                    if resume_ip_type.as_deref() == Some("IPv4") {
+                        info!("IPv4 scan complete, clearing resume state");
+                        resume_ip = None;
+                        resume_ip_type = None;
+                    }
                 }
                 Err(e) => error!("Failed to create IPv4 range: {}", e),
             }
@@ -501,6 +526,10 @@ async fn run_scanner_logic(
                 info!("  Port {}: {} IPs", port, count);
             }
         }
+
+        // Mark current round as complete
+        db.save_metadata(&format!("round_{}_complete", current_round), "true")?;
+        info!("Round {} marked as complete", current_round);
 
         if !args.loop_mode {
             info!("Loop mode disabled, exiting");
