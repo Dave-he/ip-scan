@@ -56,8 +56,8 @@ async fn async_main(args: Args) -> Result<()> {
         info!("Starting in combined mode (scanner + API)");
         run_combined(&args).await
     } else {
-        info!("Starting in scanner-only mode (default)");
-        run_scanner(&args).await
+        info!("Starting in API-only mode (default)");
+        run_api_server(&args).await
     }
 }
 

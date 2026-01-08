@@ -139,6 +139,8 @@ pub struct Config {
     #[serde(default)]
     #[allow(dead_code)]
     pub rate_limit: RateLimitConfig,
+    #[serde(default)]
+    pub api: ApiConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -185,14 +187,17 @@ pub struct ScanConfig {
     #[serde(default = "default_window_duration")]
     pub rate_window_secs: u64,
     #[serde(default)]
+    #[allow(dead_code)]
     pub api: bool,
     #[serde(default)]
     pub api_only: bool,
     #[serde(default)]
     pub no_api: bool,
     #[serde(default = "default_api_host")]
+    #[allow(dead_code)]
     pub api_host: String,
     #[serde(default = "default_api_port")]
+    #[allow(dead_code)]
     pub api_port: u16,
     #[serde(default)]
     pub swagger_ui: bool,
@@ -206,6 +211,26 @@ pub struct RateLimitConfig {
     #[serde(default = "default_window_duration")]
     #[allow(dead_code)]
     pub window_duration: u64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ApiConfig {
+    #[serde(default = "default_api_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_api_host")]
+    pub host: String,
+    #[serde(default = "default_api_port")]
+    pub port: u16,
+}
+
+impl Default for ApiConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_api_enabled(),
+            host: default_api_host(),
+            port: default_api_port(),
+        }
+    }
 }
 
 impl Default for ScanConfig {
@@ -309,11 +334,15 @@ fn default_flush_interval_ms() -> u64 {
 }
 
 fn default_api_host() -> String {
-    "127.0.0.1".to_string()
+    "0.0.0.0".to_string()
 }
 
 fn default_api_port() -> u16 {
     8080
+}
+
+fn default_api_enabled() -> bool {
+    true
 }
 
 impl Args {
@@ -405,7 +434,7 @@ impl Args {
                 self.rate_window_secs = config.scan.rate_window_secs;
             }
             if !self.api {
-                self.api = config.scan.api;
+                self.api = config.api.enabled;
             }
             if !self.api_only {
                 self.api_only = config.scan.api_only;
@@ -414,10 +443,10 @@ impl Args {
                 self.no_api = config.scan.no_api;
             }
             if self.api_host == default_api_host() {
-                self.api_host = config.scan.api_host;
+                self.api_host = config.api.host;
             }
             if self.api_port == default_api_port() {
-                self.api_port = config.scan.api_port;
+                self.api_port = config.api.port;
             }
             if !self.swagger_ui {
                 self.swagger_ui = config.scan.swagger_ui;
