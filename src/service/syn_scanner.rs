@@ -242,7 +242,7 @@ impl SynScanner {
 
     // Helper to find source IP for L4 (Linux)
     fn find_source_ip(dst_ip: Ipv4Addr) -> Option<Ipv4Addr> {
-        let interfaces = datalink::interfaces();
+        let interfaces = pnet_datalink::interfaces();
         let mut best_if_ip: Option<Ipv4Addr> = None;
         for iface in interfaces {
             for ip_net in iface.ips {
