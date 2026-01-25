@@ -173,13 +173,13 @@ async fn start_api_server(db: SqliteDB, args: &Args) -> Result<()> {
     use actix_cors::Cors;
     use actix_files::Files;
     use actix_web::{web, App, HttpServer};
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
     use utoipa::OpenApi;
 
     let db_data = web::Data::new(db.clone());
 
-    // Create global scan controller singleton
-    let scan_controller = Arc::new(Mutex::new(ScanController::new(db)));
+    // Create global scan controller singleton with async-aware mutex
+    let scan_controller = Arc::new(tokio::sync::Mutex::new(ScanController::new(db)));
     let controller_data = web::Data::new(scan_controller);
 
     // Get OpenAPI documentation
@@ -274,12 +274,13 @@ async fn run_scanner_logic(
             info!("Found previous scan progress:");
             info!("  Last IP: {} ({})", ip, ip_type);
             info!("  Last Round: {}", round);
-            
+
             // Check if this round was completed
-            let round_complete = db.get_metadata(&format!("round_{}_complete", round))?
+            let round_complete = db
+                .get_metadata(&format!("round_{}_complete", round))?
                 .map(|v| v == "true")
                 .unwrap_or(false);
-            
+
             if round_complete {
                 info!("Round {} was completed, starting new round", round);
                 let new_round = db.increment_round()?;
@@ -307,7 +308,7 @@ async fn run_scanner_logic(
         }
 
         info!("=== Starting scan round {} ===", current_round);
-        
+
         // Mark round as in progress
         db.save_metadata(&format!("round_{}_complete", current_round), "false")?;
 
@@ -464,7 +465,7 @@ async fn run_scanner_logic(
                         total_processed as f64 / start_time.elapsed().as_secs_f64()
                     );
                     metrics.print_summary();
-                    
+
                     // Clear resume IP since IPv4 scan is complete
                     if resume_ip_type.as_deref() == Some("IPv4") {
                         info!("IPv4 scan complete, clearing resume state");

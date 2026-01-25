@@ -1,2 +1,10 @@
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-L", "native=D:\\npcap-sdk-1.15\\Lib\\x64"]
+
+[source.crates-io]
+registry = "https://github.com/rust-lang/crates.io-index"
+replace-with = 'tuna'  # 切换到清华大学镜像
+
+# 清华大学
+[source.tuna]
+registry = "https://mirrors.tuna.tsinghua.edu.cn/git/crates.io-index.git"

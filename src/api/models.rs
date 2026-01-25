@@ -235,7 +235,7 @@ pub enum ExportFormat {
 }
 
 /// Scan status enumeration
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, PartialEq)]
 pub enum ScanStatus {
     Idle,
     Starting,

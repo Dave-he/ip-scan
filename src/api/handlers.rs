@@ -341,7 +341,7 @@ pub async fn get_top_ports(
 
 /// Start a new scan
 pub async fn start_scan(
-    controller: web::Data<std::sync::Arc<std::sync::Mutex<crate::service::ScanController>>>,
+    controller: web::Data<std::sync::Arc<tokio::sync::Mutex<crate::service::ScanController>>>,
     request: web::Json<StartScanRequest>,
 ) -> impl Responder {
     use crate::cli::Args;
@@ -380,8 +380,8 @@ pub async fn start_scan(
         swagger_ui: false,
     };
 
-    // Get shared controller
-    let controller_guard = controller.lock().unwrap();
+    // Get shared controller with async lock
+    let controller_guard = controller.lock().await;
 
     // No strict validation - allow empty request, will use defaults
     match controller_guard
@@ -414,10 +414,10 @@ pub async fn start_scan(
     tag = "Scan Control"
 )]
 pub async fn stop_scan(
-    controller: web::Data<std::sync::Arc<std::sync::Mutex<crate::service::ScanController>>>,
+    controller: web::Data<std::sync::Arc<tokio::sync::Mutex<crate::service::ScanController>>>,
 ) -> impl Responder {
-    // Get shared controller
-    let controller_guard = controller.lock().unwrap();
+    // Get shared controller with async lock
+    let controller_guard = controller.lock().await;
 
     match controller_guard.stop_scan().await {
         Ok(()) => HttpResponse::Ok().json(json!({
@@ -444,11 +444,11 @@ pub async fn stop_scan(
     tag = "Scan Control"
 )]
 pub async fn get_scan_status(
-    controller: web::Data<std::sync::Arc<std::sync::Mutex<crate::service::ScanController>>>,
+    controller: web::Data<std::sync::Arc<tokio::sync::Mutex<crate::service::ScanController>>>,
     db: web::Data<SqliteDB>,
 ) -> impl Responder {
-    // Get shared controller
-    let controller_guard = controller.lock().unwrap();
+    // Get shared controller with async lock
+    let controller_guard = controller.lock().await;
 
     // Get controller status
     let controller_status = controller_guard.get_status();
