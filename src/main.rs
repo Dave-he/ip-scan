@@ -293,8 +293,7 @@ async fn run_scanner_logic(
         None => {
             info!("No previous scan progress found, starting fresh scan");
             (1, None, None)
-        }
-    };
+        });
 
     // Parse port range
     let ports = parse_port_range(&args.ports).map_err(|e| anyhow::anyhow!(e))?;
@@ -527,10 +526,6 @@ async fn run_scanner_logic(
                 info!("  Port {}: {} IPs", port, count);
             }
         }
-
-        // Mark current round as complete
-        db.save_metadata(&format!("round_{}_complete", current_round), "true")?;
-        info!("Round {} marked as complete", current_round);
 
         if !args.loop_mode {
             info!("Loop mode disabled, exiting");

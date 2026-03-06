@@ -11,3 +11,4 @@
 
 *.db-journal
 scan_results.db*
+syn_scan_result.txt

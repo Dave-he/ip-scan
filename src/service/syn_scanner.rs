@@ -6,20 +6,24 @@ use pnet_packet::ipv4::{self, MutableIpv4Packet};
 use pnet_packet::tcp::{ipv4_checksum, MutableTcpPacket, TcpFlags, TcpPacket};
 use pnet_packet::MutablePacket;
 use pnet_packet::Packet;
+use pnet_packet::MutablePacket;
 use pnet_transport::{self as transport, TransportChannelType, TransportProtocol};
 use rand::Rng;
+use regex::Regex;
 use std::net::{IpAddr, Ipv4Addr};
+use std::process::Command;
 use std::sync::{Arc, Mutex};
+use std::thread;
 use std::thread;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
-use tracing::{debug, error};
+use tokio::time::timeout;
+use tracing::{debug, error, info, warn};
 
 use super::RateLimiter;
 use crate::dao::SqliteDB;
 use crate::model::ScanMetrics;
 
-#[allow(dead_code)]
 pub enum ScannerTx {
     L4(transport::TransportSender),
     L2 {
@@ -326,7 +330,19 @@ impl SynScanner {
 
                 let mut rng = rand::thread_rng();
                 let src_port = rng.gen_range(1025..=65535);
+                let mut rng = rand::thread_rng();
+                let src_port = rng.gen_range(1025..=65535);
 
+                tcp_packet.set_source(src_port);
+                tcp_packet.set_destination(dst_port);
+                tcp_packet.set_sequence(rng.gen());
+                tcp_packet.set_acknowledgement(0);
+                tcp_packet.set_flags(TcpFlags::SYN);
+                tcp_packet.set_window(64240);
+                tcp_packet.set_data_offset(5);
+                tcp_packet.set_urgent_ptr(0);
+                let checksum = ipv4_checksum(&tcp_packet.to_immutable(), &src_ip, &dst_ip);
+                tcp_packet.set_checksum(checksum);
                 tcp_packet.set_source(src_port);
                 tcp_packet.set_destination(dst_port);
                 tcp_packet.set_sequence(rng.gen());
