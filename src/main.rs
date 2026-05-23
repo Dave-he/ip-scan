@@ -293,7 +293,8 @@ async fn run_scanner_logic(
         None => {
             info!("No previous scan progress found, starting fresh scan");
             (1, None, None)
-        });
+        }
+    };
 
     // Parse port range
     let ports = parse_port_range(&args.ports).map_err(|e| anyhow::anyhow!(e))?;

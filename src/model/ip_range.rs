@@ -21,6 +21,76 @@ impl IpRange {
         })
     }
 
+    pub fn parse_target(target: &str) -> Result<Self, String> {
+        let target = target.trim();
+        if target.contains('/') {
+            Self::parse_cidr(target)
+        } else {
+            Self::new(target, target)
+        }
+    }
+
+    fn parse_cidr(cidr: &str) -> Result<Self, String> {
+        let parts: Vec<&str> = cidr.split('/').collect();
+        if parts.len() != 2 {
+            return Err("Invalid CIDR format, expected IP/prefix".to_string());
+        }
+
+        let ip: IpAddr = parts[0]
+            .parse()
+            .map_err(|e| format!("Invalid CIDR IP: {}", e))?;
+        let prefix: u8 = parts[1]
+            .parse()
+            .map_err(|e| format!("Invalid prefix length: {}", e))?;
+
+        match ip {
+            IpAddr::V4(v4) => {
+                if prefix > 32 {
+                    return Err("IPv4 prefix must be 0-32".to_string());
+                }
+                let mask = if prefix == 0 {
+                    0u32
+                } else {
+                    !0u32 << (32 - prefix)
+                };
+                let net = u32::from(v4) & mask;
+                let broadcast = net | !mask;
+                Ok(IpRange {
+                    start: IpAddr::V4(Ipv4Addr::from(net)),
+                    end: IpAddr::V4(Ipv4Addr::from(broadcast)),
+                })
+            }
+            IpAddr::V6(v6) => {
+                if prefix > 128 {
+                    return Err("IPv6 prefix must be 0-128".to_string());
+                }
+                let mask = if prefix == 0 {
+                    0u128
+                } else {
+                    !0u128 << (128 - prefix)
+                };
+                let net = u128::from(v6) & mask;
+                let broadcast = net | !mask;
+                Ok(IpRange {
+                    start: IpAddr::V6(Ipv6Addr::from(net)),
+                    end: IpAddr::V6(Ipv6Addr::from(broadcast)),
+                })
+            }
+        }
+    }
+
+    pub fn count(&self) -> usize {
+        match (self.start, self.end) {
+            (IpAddr::V4(s), IpAddr::V4(e)) => {
+                (u32::from(e) - u32::from(s) + 1) as usize
+            }
+            (IpAddr::V6(s), IpAddr::V6(e)) => {
+                (u128::from(e) - u128::from(s) + 1) as usize
+            }
+            _ => 0,
+        }
+    }
+
     pub fn iter(&self) -> IpIterator {
         IpIterator::new(self.start, self.end)
     }
@@ -97,39 +167,34 @@ impl Iterator for IpIterator {
 }
 
 pub fn parse_port_range(range: &str) -> Result<Vec<u16>, String> {
-    if range.contains('-') {
-        let parts: Vec<&str> = range.split('-').collect();
-        if parts.len() != 2 {
-            return Err("Invalid port range format".to_string());
+    let mut ports = Vec::new();
+    for part in range.split(',') {
+        let part = part.trim();
+        if part.contains('-') {
+            let parts: Vec<&str> = part.split('-').collect();
+            if parts.len() != 2 {
+                return Err("Invalid port range format".to_string());
+            }
+            let start: u16 = parts[0]
+                .parse()
+                .map_err(|_| "Invalid start port".to_string())?;
+            let end: u16 = parts[1]
+                .parse()
+                .map_err(|_| "Invalid end port".to_string())?;
+            if start > end {
+                return Err("Start port must be less than or equal to end port".to_string());
+            }
+            ports.extend(start..=end);
+        } else {
+            let port: u16 = part
+                .parse()
+                .map_err(|_| format!("Invalid port: {}", part))?;
+            ports.push(port);
         }
-
-        let start: u16 = parts[0]
-            .parse()
-            .map_err(|_| "Invalid start port".to_string())?;
-        let end: u16 = parts[1]
-            .parse()
-            .map_err(|_| "Invalid end port".to_string())?;
-
-        if start > end {
-            return Err("Start port must be less than or equal to end port".to_string());
-        }
-
-        Ok((start..=end).collect())
-    } else if range.contains(',') {
-        range
-            .split(',')
-            .map(|s| {
-                s.trim()
-                    .parse::<u16>()
-                    .map_err(|_| format!("Invalid port: {}", s))
-            })
-            .collect()
-    } else {
-        let port: u16 = range
-            .parse()
-            .map_err(|_| "Invalid port number".to_string())?;
-        Ok(vec![port])
     }
+    ports.sort();
+    ports.dedup();
+    Ok(ports)
 }
 
 #[cfg(test)]
@@ -175,5 +240,41 @@ mod tests {
         assert!(parse_port_range("1-").is_err());
         assert!(parse_port_range("a").is_err());
         assert!(parse_port_range("5-1").is_err());
+    }
+
+    #[test]
+    fn test_parse_target_single_ip() {
+        let range = IpRange::parse_target("192.168.1.1").unwrap();
+        assert_eq!(range.count(), 1);
+        assert_eq!(range.start.to_string(), "192.168.1.1");
+        assert_eq!(range.end.to_string(), "192.168.1.1");
+    }
+
+    #[test]
+    fn test_parse_target_cidr_24() {
+        let range = IpRange::parse_target("192.168.1.0/24").unwrap();
+        assert_eq!(range.count(), 256);
+        assert_eq!(range.start.to_string(), "192.168.1.0");
+        assert_eq!(range.end.to_string(), "192.168.1.255");
+    }
+
+    #[test]
+    fn test_parse_target_cidr_32() {
+        let range = IpRange::parse_target("10.0.0.1/32").unwrap();
+        assert_eq!(range.count(), 1);
+        assert_eq!(range.start.to_string(), "10.0.0.1");
+        assert_eq!(range.end.to_string(), "10.0.0.1");
+    }
+
+    #[test]
+    fn test_parse_target_cidr_16() {
+        let range = IpRange::parse_target("10.0.0.0/16").unwrap();
+        assert_eq!(range.count(), 65536);
+    }
+
+    #[test]
+    fn test_count() {
+        let range = IpRange::new("192.168.1.1", "192.168.1.10").unwrap();
+        assert_eq!(range.count(), 10);
     }
 }
