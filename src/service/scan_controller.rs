@@ -385,6 +385,9 @@ mod tests {
             api_host: "127.0.0.1".to_string(),
             api_port: 8080,
             swagger_ui: false,
+            target: None,
+            preset: None,
+            output_format: "text".to_string(),
         };
 
         // This will fail because we don't have proper network setup in test,

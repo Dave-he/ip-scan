@@ -13,16 +13,20 @@ use tokio::task::JoinSet;
 use tokio::time::timeout;
 use tracing::{error, info};
 
+#[allow(dead_code)]
 const DEFAULT_BATCH_SIZE: usize = 1000;
+#[allow(dead_code)]
 const DEFAULT_CONCURRENCY: usize = 500;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub enum PortState {
     Open,
     Closed,
     Filtered,
 }
 
+#[allow(dead_code)]
 pub struct OptimizedScanner {
     db: SqliteDB,
     timeout_ms: u64,
@@ -40,6 +44,7 @@ pub struct OptimizedScanner {
 }
 
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub struct OptimizedScannerConfig {
     pub timeout_ms: u64,
     pub concurrent_limit: usize,
@@ -68,6 +73,7 @@ impl Default for OptimizedScannerConfig {
     }
 }
 
+#[allow(dead_code)]
 impl OptimizedScanner {
     pub fn new(db: SqliteDB, scan_round: i64, config: OptimizedScannerConfig) -> Self {
         let rate_limiter = RateLimiter::new(
@@ -381,6 +387,7 @@ impl OptimizedScanner {
     }
 }
 
+#[allow(dead_code)]
 pub async fn quick_scan(
     target: &str,
     ports: &[u16],
@@ -402,6 +409,7 @@ pub async fn quick_scan(
     Ok(vec![(ip, open_ports)])
 }
 
+#[allow(dead_code)]
 pub async fn range_scan(
     start_ip: &str,
     end_ip: &str,

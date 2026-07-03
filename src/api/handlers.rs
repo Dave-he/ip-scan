@@ -378,6 +378,9 @@ pub async fn start_scan(
         api_host: "127.0.0.1".to_string(),
         api_port: 8080,
         swagger_ui: false,
+        target: None,
+        preset: None,
+        output_format: "text".to_string(),
     };
 
     // Get shared controller with async lock

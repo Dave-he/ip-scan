@@ -95,6 +95,15 @@ pub struct Args {
     #[arg(long, env = "SCAN_SWAGGER_UI", action = clap::ArgAction::SetTrue)]
     pub swagger_ui: bool,
 
+    #[arg(short = 'T', long, env = "SCAN_TARGET", help = "Target: IP, CIDR (e.g. 192.168.1.0/24), or range (e.g. 192.168.1.1-192.168.1.255)")]
+    pub target: Option<String>,
+
+    #[arg(long, env = "SCAN_PRESET", help = "Scan preset: quick, standard, deep")]
+    pub preset: Option<String>,
+
+    #[arg(long, env = "SCAN_OUTPUT", default_value = "text", help = "Output format: text, json")]
+    pub output_format: String,
+
     /// Run only API server (no scanning)
     #[arg(long, env = "SCAN_API_ONLY", action = clap::ArgAction::SetTrue)]
     pub api_only: bool,
@@ -346,6 +355,35 @@ fn default_api_enabled() -> bool {
 }
 
 impl Args {
+    pub fn apply_preset(&mut self) {
+        if let Some(ref preset) = self.preset {
+            match preset.as_str() {
+                "quick" => {
+                    self.timeout = 200;
+                    self.concurrency = 500;
+                    self.max_rate = 200000;
+                    if self.ports == default_ports() {
+                        self.ports = "21,22,23,25,53,80,110,143,443,445,993,995,3306,3389,5432,6379,8080,8443,9200,27017".to_string();
+                    }
+                }
+                "standard" => {
+                    self.timeout = 500;
+                    self.concurrency = 1000;
+                    self.max_rate = 100000;
+                }
+                "deep" => {
+                    self.timeout = 2000;
+                    self.concurrency = 200;
+                    self.max_rate = 50000;
+                    if self.ports == default_ports() {
+                        self.ports = "1-65535".to_string();
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
     /// Merge configuration from file with command line arguments
     /// Command line arguments take precedence over config file
     pub fn merge_with_config(mut self) -> anyhow::Result<Self> {
@@ -467,6 +505,8 @@ impl Args {
             }
         }
 
+        self.apply_preset();
+
         // Validate configuration
         self.validate()?;
 
@@ -521,6 +561,16 @@ impl Args {
             return Err(anyhow::anyhow!(
                 "At least one of --ipv4 or --ipv6 must be enabled"
             ));
+        }
+
+        if let Some(ref target) = self.target {
+            if crate::model::IpRange::parse_target(target).is_err() {
+                return Err(anyhow::anyhow!("Invalid target format: {}. Use IP, CIDR (e.g. 192.168.1.0/24), or range (e.g. 192.168.1.1-192.168.1.255)", target));
+            }
+        }
+
+        if self.output_format != "text" && self.output_format != "json" {
+            return Err(anyhow::anyhow!("Output format must be 'text' or 'json'"));
         }
 
         Ok(())

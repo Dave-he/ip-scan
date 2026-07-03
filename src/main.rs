@@ -4,6 +4,8 @@ mod dao;
 mod error;
 mod model;
 mod service;
+#[allow(dead_code)]
+mod skill;
 
 use anyhow::Result;
 use clap::Parser;

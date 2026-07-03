@@ -10,4 +10,5 @@ pub use geo_service::GeoService;
 pub use rate_limiter::RateLimiter;
 pub use scan_controller::ScanController;
 pub use syn_scanner::SynScanner;
-pub use optimized_scanner::{OptimizedScanner, OptimizedScannerConfig, PortState};
+#[allow(unused_imports)]
+pub use optimized_scanner::{OptimizedScanner, OptimizedScannerConfig, PortState, quick_scan, range_scan};
