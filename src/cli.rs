@@ -95,13 +95,23 @@ pub struct Args {
     #[arg(long, env = "SCAN_SWAGGER_UI", action = clap::ArgAction::SetTrue)]
     pub swagger_ui: bool,
 
-    #[arg(short = 'T', long, env = "SCAN_TARGET", help = "Target: IP, CIDR (e.g. 192.168.1.0/24), or range (e.g. 192.168.1.1-192.168.1.255)")]
+    #[arg(
+        short = 'T',
+        long,
+        env = "SCAN_TARGET",
+        help = "Target: IP, CIDR (e.g. 192.168.1.0/24), or range (e.g. 192.168.1.1-192.168.1.255)"
+    )]
     pub target: Option<String>,
 
     #[arg(long, env = "SCAN_PRESET", help = "Scan preset: quick, standard, deep")]
     pub preset: Option<String>,
 
-    #[arg(long, env = "SCAN_OUTPUT", default_value = "text", help = "Output format: text, json")]
+    #[arg(
+        long,
+        env = "SCAN_OUTPUT",
+        default_value = "text",
+        help = "Output format: text, json"
+    )]
     pub output_format: String,
 
     /// Run only API server (no scanning)

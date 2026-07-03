@@ -56,8 +56,8 @@ impl Default for ScanConfig {
 }
 
 pub const COMMON_PORTS: &[u16] = &[
-    21, 22, 23, 25, 53, 80, 110, 135, 139, 143, 443, 445, 993, 995, 1433, 1521, 3306, 3389,
-    5432, 5900, 6379, 8080, 8443, 9200, 27017,
+    21, 22, 23, 25, 53, 80, 110, 135, 139, 143, 443, 445, 993, 995, 1433, 1521, 3306, 3389, 5432,
+    5900, 6379, 8080, 8443, 9200, 27017,
 ];
 
 pub struct IpScanSkill {
@@ -166,7 +166,7 @@ impl IpScanSkill {
 
         let total_for_cb = total_hosts;
         let progress_callback = move |count: usize| {
-            if count % 100 == 0 {
+            if count.is_multiple_of(100) {
                 tracing::info!("Scanned {} / {} IPs", count, total_for_cb);
             }
         };

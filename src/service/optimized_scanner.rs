@@ -109,7 +109,7 @@ impl OptimizedScanner {
             result_tx: tx,
             batch_size: config.batch_size,
             adaptive_timeout: config.adaptive_timeout,
-            avg_rtt_micros: Arc::new(AtomicU64::new(config.timeout_ms as u64 * 1000)),
+            avg_rtt_micros: Arc::new(AtomicU64::new(config.timeout_ms * 1000)),
             min_timeout_ms: min_timeout.max(50),
             max_timeout_ms: max_timeout,
         }
@@ -130,7 +130,11 @@ impl OptimizedScanner {
             return;
         }
         let old = self.avg_rtt_micros.load(Ordering::Relaxed);
-        let new_avg = if old == 0 { rtt_micros } else { (old * 7 + rtt_micros) / 8 };
+        let new_avg = if old == 0 {
+            rtt_micros
+        } else {
+            (old * 7 + rtt_micros) / 8
+        };
         self.avg_rtt_micros.store(new_avg, Ordering::Relaxed);
     }
 
@@ -207,8 +211,9 @@ impl OptimizedScanner {
                 }
                 match e.kind() {
                     std::io::ErrorKind::ConnectionRefused => PortState::Closed,
-                    std::io::ErrorKind::AddrInUse
-                    | std::io::ErrorKind::AddrNotAvailable => PortState::Closed,
+                    std::io::ErrorKind::AddrInUse | std::io::ErrorKind::AddrNotAvailable => {
+                        PortState::Closed
+                    }
                     _ => PortState::Closed,
                 }
             }
@@ -216,11 +221,7 @@ impl OptimizedScanner {
         }
     }
 
-    pub async fn scan_batch_ports(
-        &self,
-        ip: IpAddr,
-        ports: &[u16],
-    ) -> Result<Vec<u16>> {
+    pub async fn scan_batch_ports(&self, ip: IpAddr, ports: &[u16]) -> Result<Vec<u16>> {
         let mut open_ports = Vec::with_capacity(ports.len() / 20);
         let semaphore = Arc::new(tokio::sync::Semaphore::new(self.concurrent_limit));
         let ip_str = ip.to_string();
@@ -445,7 +446,9 @@ pub async fn range_scan(
         }
     };
 
-    scanner.run_high_performance(rx, ports.to_vec(), progress).await?;
+    scanner
+        .run_high_performance(rx, ports.to_vec(), progress)
+        .await?;
 
     Ok(results)
 }

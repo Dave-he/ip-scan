@@ -1,14 +1,16 @@
 mod con_scanner;
 pub mod geo_service;
+pub mod optimized_scanner;
 mod rate_limiter;
 mod scan_controller;
 mod syn_scanner;
-pub mod optimized_scanner;
 
 pub use con_scanner::{ConScanner, ConScannerConfig};
 pub use geo_service::GeoService;
+#[allow(unused_imports)]
+pub use optimized_scanner::{
+    quick_scan, range_scan, OptimizedScanner, OptimizedScannerConfig, PortState,
+};
 pub use rate_limiter::RateLimiter;
 pub use scan_controller::ScanController;
 pub use syn_scanner::SynScanner;
-#[allow(unused_imports)]
-pub use optimized_scanner::{OptimizedScanner, OptimizedScannerConfig, PortState, quick_scan, range_scan};

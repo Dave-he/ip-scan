@@ -215,35 +215,33 @@ impl SynScanner {
             });
 
             let metrics_rx_clone = metrics.clone();
-            thread::spawn(move || {
-                loop {
-                    match rx.next() {
-                        Ok(packet) => {
-                            if let Some(frame) = EthernetPacket::new(packet) {
-                                if frame.get_ethertype() == EtherTypes::Ipv4 {
-                                    if let Some(ip_header) = Ipv4Packet::new(frame.payload()) {
-                                        if ip_header.get_next_level_protocol()
-                                            == IpNextHeaderProtocols::Tcp
-                                        {
-                                            if let Some(tcp) = TcpPacket::new(ip_header.payload()) {
-                                                if tcp.get_flags() & (TcpFlags::SYN | TcpFlags::ACK)
-                                                    == (TcpFlags::SYN | TcpFlags::ACK)
-                                                {
-                                                    let src_ip = ip_header.get_source();
-                                                    let src_port = tcp.get_source();
+            thread::spawn(move || loop {
+                match rx.next() {
+                    Ok(packet) => {
+                        if let Some(frame) = EthernetPacket::new(packet) {
+                            if frame.get_ethertype() == EtherTypes::Ipv4 {
+                                if let Some(ip_header) = Ipv4Packet::new(frame.payload()) {
+                                    if ip_header.get_next_level_protocol()
+                                        == IpNextHeaderProtocols::Tcp
+                                    {
+                                        if let Some(tcp) = TcpPacket::new(ip_header.payload()) {
+                                            if tcp.get_flags() & (TcpFlags::SYN | TcpFlags::ACK)
+                                                == (TcpFlags::SYN | TcpFlags::ACK)
+                                            {
+                                                let src_ip = ip_header.get_source();
+                                                let src_port = tcp.get_source();
 
-                                                    if ip_header.get_destination() == interface_ip {
-                                                        metrics_rx_clone.increment_open();
-                                                        debug!(
-                                                            "Found open port: {}:{}",
-                                                            src_ip, src_port
-                                                        );
-                                                        let _ = result_tx.blocking_send((
-                                                            src_ip.to_string(),
-                                                            src_port,
-                                                            true,
-                                                        ));
-                                                    }
+                                                if ip_header.get_destination() == interface_ip {
+                                                    metrics_rx_clone.increment_open();
+                                                    debug!(
+                                                        "Found open port: {}:{}",
+                                                        src_ip, src_port
+                                                    );
+                                                    let _ = result_tx.blocking_send((
+                                                        src_ip.to_string(),
+                                                        src_port,
+                                                        true,
+                                                    ));
                                                 }
                                             }
                                         }
@@ -251,9 +249,9 @@ impl SynScanner {
                                 }
                             }
                         }
-                        Err(e) => {
-                            debug!("Datalink read error: {}", e);
-                        }
+                    }
+                    Err(e) => {
+                        debug!("Datalink read error: {}", e);
                     }
                 }
             });
@@ -350,9 +348,7 @@ impl SynScanner {
         }
     }
 
-    fn tokio_to_std_sender(
-        std_tx: std::sync::mpsc::Sender<SynPacket>,
-    ) -> mpsc::Sender<SynPacket> {
+    fn tokio_to_std_sender(std_tx: std::sync::mpsc::Sender<SynPacket>) -> mpsc::Sender<SynPacket> {
         let (tokio_tx, mut tokio_rx) = mpsc::channel::<SynPacket>(4096);
         thread::spawn(move || {
             while let Some(pkt) = tokio_rx.blocking_recv() {
@@ -428,8 +424,8 @@ impl SynScanner {
         })?;
 
         let mut vec = vec![0u8; 20];
-        let mut tcp_packet = MutableTcpPacket::new(&mut vec)
-            .ok_or(anyhow!("Failed to create TCP packet"))?;
+        let mut tcp_packet =
+            MutableTcpPacket::new(&mut vec).ok_or(anyhow!("Failed to create TCP packet"))?;
 
         let mut rng = rand::thread_rng();
         let src_port = rng.gen_range(1025..=65535);
