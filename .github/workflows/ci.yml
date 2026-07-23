@@ -58,8 +58,9 @@ jobs:
           $includeDir = $pcapHeader.Directory.FullName
           Write-Host "Include directory: $includeDir"
 
-          # Search for Packet.lib
-          $packetLibFile = Get-ChildItem -Path $sdkDir -Recurse -File -Filter Packet.lib | Select-Object -First 1
+          # Search for Packet.lib (prefer x64)
+          $packetLibFile = Get-ChildItem -Path $sdkDir -Recurse -File -Filter Packet.lib | Where-Object { $_.DirectoryName -like '*x64*' } | Select-Object -First 1
+          if (-not $packetLibFile) { $packetLibFile = Get-ChildItem -Path $sdkDir -Recurse -File -Filter Packet.lib | Select-Object -First 1 }
           if (-not $packetLibFile) { throw "Packet.lib not found in SDK" }
           $libDir = $packetLibFile.Directory.FullName
           Write-Host "Using LIB dir: $libDir"

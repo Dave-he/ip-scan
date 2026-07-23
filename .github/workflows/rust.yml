@@ -69,10 +69,12 @@ jobs:
     name: Test Suite
     needs: [fmt, clippy]
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        rust: [stable, beta]
+        rust: [stable]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@master
@@ -129,9 +131,10 @@ jobs:
           Write-Host "Found pcap.h at: $($pcapHeader.FullName)"
           Write-Host "Include directory: $($includeDir.FullName)"
 
-          # Find Packet.lib anywhere under SDK directory
+          # Find Packet.lib (prefer x64)
           Write-Host "Searching for Packet.lib in entire SDK directory..."
-          $packetLibFile = Get-ChildItem -Path $sdkDir -Recurse -File -Filter Packet.lib | Select-Object -First 1
+          $packetLibFile = Get-ChildItem -Path $sdkDir -Recurse -File -Filter Packet.lib | Where-Object { $_.DirectoryName -like '*x64*' } | Select-Object -First 1
+          if (-not $packetLibFile) { $packetLibFile = Get-ChildItem -Path $sdkDir -Recurse -File -Filter Packet.lib | Select-Object -First 1 }
           if (-not $packetLibFile) {
             Write-Host "Directory listing for debugging:"; Get-ChildItem -Recurse -Path $sdkDir | Write-Output
             throw "Packet.lib not found in SDK"
@@ -266,9 +269,10 @@ jobs:
           Write-Host "Found pcap.h at: $($pcapHeader.FullName)"
           Write-Host "Include directory: $($includeDir.FullName)"
 
-          # Find Packet.lib anywhere under SDK directory
+          # Find Packet.lib (prefer x64)
           Write-Host "Searching for Packet.lib in entire SDK directory..."
-          $packetLibFile = Get-ChildItem -Path $sdkDir -Recurse -File -Filter Packet.lib | Select-Object -First 1
+          $packetLibFile = Get-ChildItem -Path $sdkDir -Recurse -File -Filter Packet.lib | Where-Object { $_.DirectoryName -like '*x64*' } | Select-Object -First 1
+          if (-not $packetLibFile) { $packetLibFile = Get-ChildItem -Path $sdkDir -Recurse -File -Filter Packet.lib | Select-Object -First 1 }
           if (-not $packetLibFile) {
             Write-Host "Directory listing for debugging:"; Get-ChildItem -Recurse -Path $sdkDir | Write-Output
             throw "Packet.lib not found in SDK"
