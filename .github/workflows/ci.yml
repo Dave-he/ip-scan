@@ -52,35 +52,26 @@ jobs:
           if (Test-Path $sdkDir) { Remove-Item -Recurse -Force $sdkDir }
           Expand-Archive -Path $sdkZip -DestinationPath $sdkDir -Force
 
-          # Detect SDK root dynamically (first top-level directory)
-          $sdkRoot = Get-ChildItem -Path $sdkDir -Directory | Select-Object -First 1
-          if (-not $sdkRoot) { throw "SDK root not found under $sdkDir" }
-          Write-Host "SDK root detected: $($sdkRoot.FullName)"
+          # Search for pcap.h to find include path
+          $pcapHeader = Get-ChildItem -Path $sdkDir -Recurse -File -Filter pcap.h | Select-Object -First 1
+          if (-not $pcapHeader) { throw "pcap.h not found in SDK" }
+          $includeDir = $pcapHeader.Directory.FullName
+          Write-Host "Include directory: $includeDir"
 
-          # Find Include dir
-          $includeDir = Get-ChildItem -Path $sdkRoot.FullName -Directory -Recurse -Filter Include | Select-Object -First 1
-          if (-not $includeDir) {
-            Write-Host "Include directory not found by name, searching for pcap.h to infer include path"
-            $pcapHeader = Get-ChildItem -Path $sdkRoot.FullName -Recurse -File -Filter pcap.h | Select-Object -First 1
-            if ($pcapHeader) { $includeDir = $pcapHeader.Directory } else { throw "Include path not found in SDK" }
-          }
-          Write-Host "Include directory: $($includeDir.FullName)"
-
-          # Find Packet.lib anywhere under SDK
-          $packetLibFile = Get-ChildItem -Path $sdkRoot.FullName -Recurse -File -Filter Packet.lib | Select-Object -First 1
-          if (-not $packetLibFile) {
-            Write-Host "Directory listing for debugging:"; Get-ChildItem -Recurse -Path $sdkRoot.FullName | Write-Output
-            throw "Packet.lib not found under $($sdkRoot.FullName)"
-          }
+          # Search for Packet.lib
+          $packetLibFile = Get-ChildItem -Path $sdkDir -Recurse -File -Filter Packet.lib | Select-Object -First 1
+          if (-not $packetLibFile) { throw "Packet.lib not found in SDK" }
           $libDir = $packetLibFile.Directory.FullName
-          Write-Host "Found Packet.lib at: $($packetLibFile.FullName)"
           Write-Host "Using LIB dir: $libDir"
 
-          # Export environment variables for subsequent steps
+          # Use the extracted root directory
+          $sdkRoot = (Get-ChildItem -Path $sdkDir -Directory | Select-Object -First 1)
+          if (-not $sdkRoot) { $sdkRoot = (Get-Item $sdkDir) }
+
           "WPCAP_DIR=$($sdkRoot.FullName)" >> $env:GITHUB_ENV
           "NPCAP_DIR=$($sdkRoot.FullName)" >> $env:GITHUB_ENV
           "LIB=$libDir;$env:LIB" >> $env:GITHUB_ENV
-          "INCLUDE=$($includeDir.FullName);$env:INCLUDE" >> $env:GITHUB_ENV
+          "INCLUDE=$includeDir;$env:INCLUDE" >> $env:GITHUB_ENV
 
       - name: Build (Windows)
         if: matrix.os == 'windows-latest'
