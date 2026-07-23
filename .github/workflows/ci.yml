@@ -86,13 +86,6 @@ jobs:
           "LIB=$libDir;$env:LIB" >> $env:GITHUB_ENV
           "INCLUDE=$includeDir;$env:INCLUDE" >> $env:GITHUB_ENV
 
-          # Add SDK DLL directory to PATH for runtime
-          $dllDir = Get-ChildItem -Path $sdkDir -Recurse -File -Filter wpcap.dll | Where-Object { $_.DirectoryName -like '*x64*' } | Select-Object -First 1
-          if ($dllDir) {
-            "PATH=$($dllDir.DirectoryName);$env:PATH" >> $env:GITHUB_ENV
-            Write-Host "Added wpcap.dll directory to PATH: $($dllDir.DirectoryName)"
-          }
-
       - name: Build (Windows)
         if: matrix.os == 'windows-latest'
         run: cargo build --verbose
