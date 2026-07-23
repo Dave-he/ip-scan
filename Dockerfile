@@ -13,6 +13,7 @@ RUN mkdir src && echo "fn main() {}" > src/main.rs && cargo build --release && r
 
 COPY src ./src
 COPY web ./web
+COPY servers.json ./
 
 RUN touch src/main.rs && cargo build --release
 
