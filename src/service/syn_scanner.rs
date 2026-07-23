@@ -2,10 +2,10 @@ use anyhow::{anyhow, Result};
 use pnet_packet::ip::IpNextHeaderProtocols;
 use pnet_packet::tcp::{ipv4_checksum, MutableTcpPacket, TcpFlags, TcpPacket};
 use pnet_packet::Packet;
+#[cfg(target_os = "windows")]
+use pnet_transport as transport;
 #[cfg(not(target_os = "windows"))]
 use pnet_transport::{self as transport, TransportChannelType, TransportProtocol};
-#[cfg(target_os = "windows")]
-use pnet_transport::self as transport;
 use rand::Rng;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::{Arc, Mutex};
