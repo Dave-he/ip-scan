@@ -2,7 +2,10 @@ use anyhow::{anyhow, Result};
 use pnet_packet::ip::IpNextHeaderProtocols;
 use pnet_packet::tcp::{ipv4_checksum, MutableTcpPacket, TcpFlags, TcpPacket};
 use pnet_packet::Packet;
+#[cfg(not(target_os = "windows"))]
 use pnet_transport::{self as transport, TransportChannelType, TransportProtocol};
+#[cfg(target_os = "windows")]
+use pnet_transport::self as transport;
 use rand::Rng;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::{Arc, Mutex};
@@ -39,6 +42,7 @@ pub enum ScannerTx {
 }
 
 #[cfg(target_os = "windows")]
+#[allow(dead_code)]
 pub enum ScannerTx {
     L4(transport::TransportSender),
     L2 {
@@ -58,7 +62,7 @@ struct SynPacket {
 }
 
 pub struct SynScanner {
-    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    #[allow(dead_code)]
     tx: Arc<Mutex<ScannerTx>>,
     rate_limiter: RateLimiter,
     metrics: ScanMetrics,
@@ -392,6 +396,7 @@ impl SynScanner {
         Ok((gateway_ip, mac, interface_ip))
     }
 
+    #[cfg(not(target_os = "windows"))]
     fn find_source_ip(dst_ip: Ipv4Addr) -> Option<Ipv4Addr> {
         let interfaces = pnet_datalink::interfaces();
         let mut best_if_ip: Option<Ipv4Addr> = None;
@@ -410,6 +415,7 @@ impl SynScanner {
         best_if_ip
     }
 
+    #[cfg(not(target_os = "windows"))]
     #[inline]
     fn send_syn_l4_internal(
         tx: &mut transport::TransportSender,

@@ -161,6 +161,21 @@ jobs:
           "LIB=$libDir;$env:LIB" >> $env:GITHUB_ENV
           "INCLUDE=$($includeDir.FullName);$env:INCLUDE" >> $env:GITHUB_ENV
 
+          # Add SDK DLL directory to PATH for runtime (wpcap.dll etc.)
+          $dllDir = Get-ChildItem -Path $sdkDir -Recurse -File -Filter wpcap.dll | Where-Object { $_.DirectoryName -like '*x64*' } | Select-Object -First 1
+          if ($dllDir) {
+            "PATH=$($dllDir.DirectoryName);$env:PATH" >> $env:GITHUB_ENV
+            Write-Host "Added wpcap.dll directory to PATH: $($dllDir.DirectoryName)"
+          } else {
+            $fallbackDllDir = Get-ChildItem -Path $sdkDir -Recurse -File -Filter wpcap.dll | Select-Object -First 1
+            if ($fallbackDllDir) {
+              "PATH=$($fallbackDllDir.DirectoryName);$env:PATH" >> $env:GITHUB_ENV
+              Write-Host "Added wpcap.dll directory to PATH: $($fallbackDllDir.DirectoryName)"
+            } else {
+              Write-Host "Warning: wpcap.dll not found in SDK, tests requiring Npcap may fail"
+            }
+          }
+
       - name: Build
         run: cargo build --verbose
       - name: Run tests
@@ -310,6 +325,21 @@ jobs:
           "NPCAP_DIR=$sdkDir" >> $env:GITHUB_ENV
           "LIB=$libDir;$env:LIB" >> $env:GITHUB_ENV
           "INCLUDE=$($includeDir.FullName);$env:INCLUDE" >> $env:GITHUB_ENV
+
+          # Add SDK DLL directory to PATH for runtime (wpcap.dll etc.)
+          $dllDir = Get-ChildItem -Path $sdkDir -Recurse -File -Filter wpcap.dll | Where-Object { $_.DirectoryName -like '*x64*' } | Select-Object -First 1
+          if ($dllDir) {
+            "PATH=$($dllDir.DirectoryName);$env:PATH" >> $env:GITHUB_ENV
+            Write-Host "Added wpcap.dll directory to PATH: $($dllDir.DirectoryName)"
+          } else {
+            $fallbackDllDir = Get-ChildItem -Path $sdkDir -Recurse -File -Filter wpcap.dll | Select-Object -First 1
+            if ($fallbackDllDir) {
+              "PATH=$($fallbackDllDir.DirectoryName);$env:PATH" >> $env:GITHUB_ENV
+              Write-Host "Added wpcap.dll directory to PATH: $($fallbackDllDir.DirectoryName)"
+            } else {
+              Write-Host "Warning: wpcap.dll not found in SDK, tests requiring Npcap may fail"
+            }
+          }
 
       - name: Build
         run: cargo build --verbose --release --target ${{ matrix.target }}
