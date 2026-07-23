@@ -172,10 +172,8 @@ impl ServiceProber {
                     info.banner = Some("Redis".to_string());
                 }
             }
-            "mysql" => {
-                if !banner.is_empty() {
-                    info.banner = Some("MySQL".to_string());
-                }
+            "mysql" if !banner.is_empty() => {
+                info.banner = Some("MySQL".to_string());
             }
             _ => {}
         }
