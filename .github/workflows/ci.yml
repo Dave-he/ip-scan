@@ -46,7 +46,19 @@ jobs:
           $sdkDir = "$env:RUNNER_TEMP\npcap-sdk"
           $url = 'https://npcap.com/dist/npcap-sdk-1.15.zip'
           Write-Host "Downloading Npcap SDK from $url"
-          Invoke-WebRequest -Uri $url -OutFile $sdkZip
+          $maxRetries = 3
+          $retryCount = 0
+          while ($retryCount -lt $maxRetries) {
+            try {
+              Invoke-WebRequest -Uri $url -OutFile $sdkZip -TimeoutSec 60
+              break
+            } catch {
+              $retryCount++
+              Write-Host "Download attempt $retryCount failed: $_"
+              if ($retryCount -ge $maxRetries) { throw "Failed to download Npcap SDK after $maxRetries attempts" }
+              Start-Sleep -Seconds 5
+            }
+          }
 
           Write-Host "Extracting $sdkZip to $sdkDir"
           if (Test-Path $sdkDir) { Remove-Item -Recurse -Force $sdkDir }
