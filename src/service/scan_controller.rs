@@ -388,6 +388,9 @@ mod tests {
             target: None,
             preset: None,
             output_format: "text".to_string(),
+            probe_service: false,
+            probe_timeout: 5,
+            probe_concurrency: 50,
         };
 
         // This will fail because we don't have proper network setup in test,

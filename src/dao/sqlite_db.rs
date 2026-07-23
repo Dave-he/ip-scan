@@ -1,4 +1,4 @@
-use crate::model::{ipv4_to_index, IpGeoInfo, PortBitmap};
+use crate::model::{ipv4_to_index, IpGeoInfo, IpServiceSummary, PortBitmap, ServiceInfo};
 use anyhow::Result;
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -91,6 +91,36 @@ impl SqliteDB {
                 source TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )",
+            [],
+        )?;
+
+        // Service info table
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS service_info (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ip_address TEXT NOT NULL,
+                port INTEGER NOT NULL,
+                service_name TEXT NOT NULL DEFAULT '',
+                protocol TEXT NOT NULL DEFAULT '',
+                banner TEXT,
+                http_title TEXT,
+                http_server TEXT,
+                http_body_preview TEXT,
+                tls_subject TEXT,
+                tls_issuer TEXT,
+                detected_at TEXT NOT NULL,
+                UNIQUE(ip_address, port)
+            )",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_service_info_ip ON service_info(ip_address)",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_service_info_service ON service_info(service_name)",
             [],
         )?;
 
@@ -649,14 +679,14 @@ impl SqliteDB {
         let conn = self.conn.lock().unwrap();
 
         let mut stmt = conn.prepare(
-            "SELECT scan_round, 
+            "SELECT scan_round,
                     MIN(last_updated) as start_time,
                     MAX(last_updated) as end_time,
                     SUM(open_count) as total_open_ports,
                     COUNT(DISTINCT port) as ports_scanned
-             FROM port_bitmaps 
-             GROUP BY scan_round 
-             ORDER BY scan_round DESC 
+             FROM port_bitmaps
+             GROUP BY scan_round
+             ORDER BY scan_round DESC
              LIMIT ?",
         )?;
 
@@ -673,6 +703,145 @@ impl SqliteDB {
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok(results)
+    }
+
+    // ── Service Info CRUD ──────────────────────────────────────────
+
+    #[allow(dead_code)]
+    pub fn save_service_info(&self, info: &ServiceInfo) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO service_info (ip_address, port, service_name, protocol, banner, http_title, http_server, http_body_preview, tls_subject, tls_issuer, detected_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+             ON CONFLICT(ip_address, port)
+             DO UPDATE SET service_name=?3, protocol=?4, banner=?5, http_title=?6, http_server=?7, http_body_preview=?8, tls_subject=?9, tls_issuer=?10, detected_at=?11",
+            params![
+                info.ip, info.port, info.service_name, info.protocol,
+                info.banner, info.http_title, info.http_server,
+                info.http_body_preview, info.tls_subject, info.tls_issuer,
+                info.detected_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn save_service_info_batch(&self, infos: &[ServiceInfo]) -> Result<()> {
+        if infos.is_empty() {
+            return Ok(());
+        }
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO service_info (ip_address, port, service_name, protocol, banner, http_title, http_server, http_body_preview, tls_subject, tls_issuer, detected_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                 ON CONFLICT(ip_address, port)
+                 DO UPDATE SET service_name=?3, protocol=?4, banner=?5, http_title=?6, http_server=?7, http_body_preview=?8, tls_subject=?9, tls_issuer=?10, detected_at=?11"
+            )?;
+            for info in infos {
+                stmt.execute(params![
+                    info.ip,
+                    info.port,
+                    info.service_name,
+                    info.protocol,
+                    info.banner,
+                    info.http_title,
+                    info.http_server,
+                    info.http_body_preview,
+                    info.tls_subject,
+                    info.tls_issuer,
+                    info.detected_at,
+                ])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn get_service_info_by_ip(&self, ip: &str) -> Result<Vec<ServiceInfo>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT ip_address, port, service_name, protocol, banner, http_title, http_server, http_body_preview, tls_subject, tls_issuer, detected_at
+             FROM service_info WHERE ip_address = ?1 ORDER BY port",
+        )?;
+        let results = stmt
+            .query_map([ip], |row| {
+                Ok(ServiceInfo {
+                    ip: row.get(0)?,
+                    port: row.get(1)?,
+                    service_name: row.get(2)?,
+                    protocol: row.get(3)?,
+                    banner: row.get(4)?,
+                    http_title: row.get(5)?,
+                    http_server: row.get(6)?,
+                    http_body_preview: row.get(7)?,
+                    tls_subject: row.get(8)?,
+                    tls_issuer: row.get(9)?,
+                    detected_at: row.get(10)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(results)
+    }
+
+    pub fn get_ips_missing_service_probe(&self, limit: usize) -> Result<Vec<(String, Vec<u16>)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT o.ip_address, GROUP_CONCAT(o.port) as ports
+             FROM open_ports_detail o
+             WHERE o.ip_address NOT IN (SELECT DISTINCT ip_address FROM service_info)
+             GROUP BY o.ip_address
+             LIMIT ?1",
+        )?;
+        let results = stmt
+            .query_map([limit as i64], |row| {
+                let ip: String = row.get(0)?;
+                let ports_str: String = row.get(1)?;
+                let ports: Vec<u16> = ports_str
+                    .split(',')
+                    .filter_map(|s| s.parse().ok())
+                    .collect();
+                Ok((ip, ports))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(results)
+    }
+
+    pub fn get_all_ip_service_summaries(
+        &self,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<IpServiceSummary>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT ip_address FROM (SELECT DISTINCT ip_address FROM service_info) LIMIT ?1 OFFSET ?2",
+        )?;
+        let ips: Vec<String> = stmt
+            .query_map([limit as i64, offset as i64], |row| row.get(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut summaries = Vec::new();
+        for ip in ips {
+            let services = self.get_service_info_by_ip(&ip)?;
+            let category = IpServiceSummary::categorize(&services);
+            summaries.push(IpServiceSummary {
+                ip: ip.clone(),
+                services,
+                ip_type: None,
+                category,
+            });
+        }
+        Ok(summaries)
+    }
+
+    pub fn count_ips_with_service_info(&self) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(DISTINCT ip_address) FROM service_info",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(count as usize)
     }
 }
 

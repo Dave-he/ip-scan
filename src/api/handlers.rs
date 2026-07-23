@@ -8,6 +8,7 @@ use tracing::error;
 
 use crate::api::models::*;
 use crate::dao::SqliteDB;
+use crate::model::ServiceInfo;
 
 /// Get paginated scan results with filtering
 #[utoipa::path(
@@ -381,6 +382,9 @@ pub async fn start_scan(
         target: None,
         preset: None,
         output_format: "text".to_string(),
+        probe_service: false,
+        probe_timeout: 5,
+        probe_concurrency: 50,
     };
 
     // Get shared controller with async lock
@@ -733,6 +737,97 @@ pub async fn export_ndjson(
             error!("Failed to export NDJSON: {}", e);
             HttpResponse::InternalServerError().json(ErrorResponse {
                 error: "Failed to export scan results".to_string(),
+                code: Some("DATABASE_ERROR".to_string()),
+            })
+        }
+    }
+}
+
+fn service_info_to_response(info: &ServiceInfo) -> ServiceInfoResponse {
+    ServiceInfoResponse {
+        ip: info.ip.clone(),
+        port: info.port,
+        service_name: info.service_name.clone(),
+        protocol: info.protocol.clone(),
+        banner: info.banner.clone(),
+        http_title: info.http_title.clone(),
+        http_server: info.http_server.clone(),
+        http_body_preview: info.http_body_preview.clone(),
+        tls_subject: info.tls_subject.clone(),
+        tls_issuer: info.tls_issuer.clone(),
+        detected_at: info.detected_at.clone(),
+    }
+}
+
+pub async fn get_service_info_by_ip(
+    db: web::Data<SqliteDB>,
+    ip: web::Path<String>,
+) -> impl Responder {
+    match db.get_service_info_by_ip(&ip) {
+        Ok(services) => {
+            if services.is_empty() {
+                HttpResponse::NotFound().json(ErrorResponse {
+                    error: format!("No service info found for IP: {}", ip),
+                    code: Some("IP_NOT_FOUND".to_string()),
+                })
+            } else {
+                let category = crate::model::IpServiceSummary::categorize(&services);
+                let resp_services: Vec<ServiceInfoResponse> =
+                    services.iter().map(service_info_to_response).collect();
+                HttpResponse::Ok().json(IpServiceSummaryResponse {
+                    ip: ip.to_string(),
+                    services: resp_services,
+                    ip_type: None,
+                    category,
+                })
+            }
+        }
+        Err(e) => {
+            error!("Failed to get service info for IP {}: {}", ip, e);
+            HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Failed to retrieve service info".to_string(),
+                code: Some("DATABASE_ERROR".to_string()),
+            })
+        }
+    }
+}
+
+pub async fn get_service_summaries(
+    db: web::Data<SqliteDB>,
+    query: web::Query<PaginationQuery>,
+) -> impl Responder {
+    if let Err(err) = query.validate() {
+        return HttpResponse::BadRequest().json(ErrorResponse {
+            error: err,
+            code: Some("INVALID_PAGINATION".to_string()),
+        });
+    }
+
+    let offset = (query.page - 1) * query.page_size;
+
+    match db.get_all_ip_service_summaries(query.page_size, offset) {
+        Ok(summaries) => {
+            let total = db.count_ips_with_service_info().unwrap_or(0);
+            let resp_summaries: Vec<IpServiceSummaryResponse> = summaries
+                .into_iter()
+                .map(|s| IpServiceSummaryResponse {
+                    ip: s.ip,
+                    services: s.services.iter().map(service_info_to_response).collect(),
+                    ip_type: s.ip_type,
+                    category: s.category,
+                })
+                .collect();
+            HttpResponse::Ok().json(ServiceSummaryListResponse {
+                summaries: resp_summaries,
+                total,
+                page: query.page,
+                page_size: query.page_size,
+            })
+        }
+        Err(e) => {
+            error!("Failed to get service summaries: {}", e);
+            HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Failed to retrieve service summaries".to_string(),
                 code: Some("DATABASE_ERROR".to_string()),
             })
         }

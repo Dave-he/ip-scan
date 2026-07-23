@@ -1,6 +1,7 @@
 use crate::dao::SqliteDB;
-use crate::model::IpRange;
+use crate::model::{IpRange, IpServiceSummary, ServiceInfo};
 use crate::service::optimized_scanner::{OptimizedScanner, OptimizedScannerConfig, PortState};
+use crate::service::ServiceProber;
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
@@ -21,6 +22,8 @@ pub struct HostScanResult {
     pub closed_ports: Vec<u16>,
     pub filtered_ports: Vec<u16>,
     pub port_details: Vec<PortResult>,
+    pub services: Vec<ServiceInfo>,
+    pub category: String,
     pub scan_time_ms: u64,
     pub total_ports_scanned: usize,
 }
@@ -139,6 +142,8 @@ impl IpScanSkill {
             closed_ports,
             filtered_ports,
             port_details,
+            services: Vec::new(),
+            category: String::new(),
             scan_time_ms: start.elapsed().as_millis() as u64,
             total_ports_scanned: ports_vec.len(),
         })
@@ -192,6 +197,8 @@ impl IpScanSkill {
                     closed_ports: Vec::new(),
                     filtered_ports: Vec::new(),
                     port_details: Vec::new(),
+                    services: Vec::new(),
+                    category: String::new(),
                     scan_time_ms: 0,
                     total_ports_scanned: 0,
                 });
@@ -252,6 +259,22 @@ impl IpScanSkill {
             .collect::<Vec<_>>()
             .join(",");
         skill.scan_single(target, &ports_str).await
+    }
+
+    pub async fn scan_with_probe(&self, target: &str, ports: &str) -> Result<HostScanResult> {
+        let mut result = self.scan_single(target, ports).await?;
+        if !result.open_ports.is_empty() {
+            let prober = ServiceProber::new(5, 50);
+            let services = prober.probe_ip(target, &result.open_ports).await;
+            result.category = IpServiceSummary::categorize(&services);
+            result.services = services;
+        }
+        Ok(result)
+    }
+
+    pub async fn probe_host(&self, ip: &str, open_ports: &[u16]) -> Result<Vec<ServiceInfo>> {
+        let prober = ServiceProber::new(5, 50);
+        Ok(prober.probe_ip(ip, open_ports).await)
     }
 }
 

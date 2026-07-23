@@ -52,6 +52,15 @@ pub fn config_export_routes(cfg: &mut web::ServiceConfig) {
     );
 }
 
+/// Configure service info routes
+pub fn config_service_routes(cfg: &mut web::ServiceConfig) {
+    cfg.service(
+        web::scope("/services")
+            .route("", web::get().to(handlers::get_service_summaries))
+            .route("/{ip}", web::get().to(handlers::get_service_info_by_ip)),
+    );
+}
+
 /// OpenAPI documentation
 #[derive(OpenApi)]
 #[openapi(
@@ -83,6 +92,9 @@ pub fn config_export_routes(cfg: &mut web::ServiceConfig) {
             models::StartScanRequest,
             models::ExportFormat,
             models::ScanStatus,
+            models::ServiceInfoResponse,
+            models::IpServiceSummaryResponse,
+            models::ServiceSummaryListResponse,
         )
     ),
     tags(
@@ -90,6 +102,7 @@ pub fn config_export_routes(cfg: &mut web::ServiceConfig) {
         (name = "Statistics", description = "Statistics endpoints"),
         (name = "Scan Control", description = "Scan control endpoints"),
         (name = "Export", description = "Data export endpoints"),
+        (name = "Services", description = "Service detection endpoints"),
     )
 )]
 pub struct ApiDoc;

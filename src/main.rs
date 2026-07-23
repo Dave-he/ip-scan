@@ -481,10 +481,6 @@ async fn run_scanner_logic(
 
         // Geolocation Enrichment
         if let Some(geo) = &geo_service {
-            // Process in batches to avoid holding up the loop too long,
-            // but enough to catch up with scanning speed eventually.
-            // Since we scan fast, we might accumulate many IPs.
-            // Let's try to process up to 1000 per round for now.
             info!("Starting geolocation enrichment...");
             match db.get_ips_missing_geo(1000) {
                 Ok(ips_to_enrich) => {
@@ -493,8 +489,6 @@ async fn run_scanner_logic(
                         let mut enriched_count = 0;
 
                         for ip in ips_to_enrich {
-                            // Add a small delay to respect API rate limits if using API
-                            // Ideally this should be handled inside GeoService or RateLimiter
                             match geo.lookup(&ip).await {
                                 Ok(info) => {
                                     if let Err(e) = db.save_ip_geo_info(&info) {
@@ -510,6 +504,34 @@ async fn run_scanner_logic(
                     }
                 }
                 Err(e) => error!("Failed to fetch IPs for enrichment: {}", e),
+            }
+        }
+
+        // Service Detection Enrichment
+        if args.probe_service {
+            info!("Starting service detection...");
+            match db.get_ips_missing_service_probe(200) {
+                Ok(ip_ports) => {
+                    if !ip_ports.is_empty() {
+                        info!("Found {} IPs to probe for service info", ip_ports.len());
+                        let prober =
+                            service::ServiceProber::new(args.probe_timeout, args.probe_concurrency);
+                        let mut probed_count = 0;
+
+                        for (ip, ports) in ip_ports {
+                            let services = prober.probe_ip(&ip, &ports).await;
+                            if !services.is_empty() {
+                                if let Err(e) = db.save_service_info_batch(&services) {
+                                    error!("Failed to save service info for {}: {}", ip, e);
+                                } else {
+                                    probed_count += 1;
+                                }
+                            }
+                        }
+                        info!("Probed {} IPs for service info", probed_count);
+                    }
+                }
+                Err(e) => error!("Failed to fetch IPs for service probing: {}", e),
             }
         }
 

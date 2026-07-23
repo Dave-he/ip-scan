@@ -3,6 +3,7 @@ pub mod geo_service;
 pub mod optimized_scanner;
 mod rate_limiter;
 mod scan_controller;
+pub mod service_prober;
 mod syn_scanner;
 
 pub use con_scanner::{ConScanner, ConScannerConfig};
@@ -13,4 +14,5 @@ pub use optimized_scanner::{
 };
 pub use rate_limiter::RateLimiter;
 pub use scan_controller::ScanController;
+pub use service_prober::ServiceProber;
 pub use syn_scanner::SynScanner;

@@ -16,7 +16,8 @@ pub fn init_routes(cfg: &mut web::ServiceConfig) {
             .configure(routes::config_results_routes)
             .configure(routes::config_stats_routes)
             .configure(routes::config_scan_routes)
-            .configure(routes::config_export_routes),
+            .configure(routes::config_export_routes)
+            .configure(routes::config_service_routes),
     );
 }
 

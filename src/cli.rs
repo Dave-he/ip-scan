@@ -129,6 +129,18 @@ pub struct Args {
     #[arg(long, env = "SCAN_NO_GEO", action = clap::ArgAction::SetTrue)]
     pub no_geo: bool,
 
+    /// Enable service detection (probe open ports for banners, HTTP info, etc.)
+    #[arg(long, env = "SCAN_PROBE_SERVICE", action = clap::ArgAction::SetTrue)]
+    pub probe_service: bool,
+
+    /// Service probe timeout in seconds
+    #[arg(long, env = "SCAN_PROBE_TIMEOUT", default_value = "5")]
+    pub probe_timeout: u64,
+
+    /// Service probe concurrency
+    #[arg(long, env = "SCAN_PROBE_CONCURRENCY", default_value = "50")]
+    pub probe_concurrency: usize,
+
     #[arg(long, env = "SCAN_WORKER_THREADS")]
     pub worker_threads: Option<usize>,
 
@@ -191,6 +203,12 @@ pub struct ScanConfig {
     pub geoip_db: Option<String>,
     #[serde(default)]
     pub no_geo: bool,
+    #[serde(default)]
+    pub probe_service: bool,
+    #[serde(default = "default_probe_timeout")]
+    pub probe_timeout: u64,
+    #[serde(default = "default_probe_concurrency")]
+    pub probe_concurrency: usize,
 
     pub worker_threads: Option<usize>,
     #[serde(default = "default_pipeline_buffer")]
@@ -270,6 +288,9 @@ impl Default for ScanConfig {
             syn: false,
             geoip_db: None,
             no_geo: false,
+            probe_service: false,
+            probe_timeout: default_probe_timeout(),
+            probe_concurrency: default_probe_concurrency(),
             worker_threads: None,
             pipeline_buffer: default_pipeline_buffer(),
             result_buffer: default_result_buffer(),
@@ -362,6 +383,14 @@ fn default_api_port() -> u16 {
 
 fn default_api_enabled() -> bool {
     true
+}
+
+fn default_probe_timeout() -> u64 {
+    5
+}
+
+fn default_probe_concurrency() -> usize {
+    50
 }
 
 impl Args {
@@ -459,6 +488,15 @@ impl Args {
             }
             if !self.no_geo {
                 self.no_geo = config.scan.no_geo;
+            }
+            if !self.probe_service {
+                self.probe_service = config.scan.probe_service;
+            }
+            if self.probe_timeout == default_probe_timeout() {
+                self.probe_timeout = config.scan.probe_timeout;
+            }
+            if self.probe_concurrency == default_probe_concurrency() {
+                self.probe_concurrency = config.scan.probe_concurrency;
             }
             if self.worker_threads.is_none() {
                 self.worker_threads = config.scan.worker_threads;

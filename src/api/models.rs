@@ -271,3 +271,41 @@ impl PaginationQuery {
         Ok(())
     }
 }
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct ServiceInfoResponse {
+    pub ip: String,
+    pub port: u16,
+    pub service_name: String,
+    pub protocol: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub banner: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http_title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http_server: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http_body_preview: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls_subject: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls_issuer: Option<String>,
+    pub detected_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct IpServiceSummaryResponse {
+    pub ip: String,
+    pub services: Vec<ServiceInfoResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ip_type: Option<String>,
+    pub category: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct ServiceSummaryListResponse {
+    pub summaries: Vec<IpServiceSummaryResponse>,
+    pub total: usize,
+    pub page: usize,
+    pub page_size: usize,
+}
