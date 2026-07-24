@@ -200,6 +200,12 @@ pub struct Args {
 
     #[arg(long, env = "SCAN_RATE_WINDOW_S", default_value = "1")]
     pub rate_window_secs: u64,
+
+    /// Delay between scan rounds in loop mode (milliseconds, default 0).
+    /// Set above 0 when scanning a single fixed range to avoid hammering the
+    /// same subnet each pass; leave at 0 for continuous range sweeps.
+    #[arg(long, env = "SCAN_ROUND_DELAY_MS", default_value = "0")]
+    pub round_delay_ms: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -264,6 +270,8 @@ pub struct ScanConfig {
     pub max_rate: u64,
     #[serde(default = "default_window_duration")]
     pub rate_window_secs: u64,
+    #[serde(default = "default_round_delay_ms")]
+    pub round_delay_ms: u64,
     #[serde(default)]
     #[allow(dead_code)]
     pub api: bool,
@@ -340,6 +348,7 @@ impl Default for ScanConfig {
             flush_interval_ms: default_flush_interval_ms(),
             max_rate: default_max_rate(),
             rate_window_secs: default_window_duration(),
+            round_delay_ms: default_round_delay_ms(),
             api: false,
             api_only: false,
             no_api: false,
@@ -413,6 +422,10 @@ fn default_db_batch_size() -> usize {
 
 fn default_flush_interval_ms() -> u64 {
     1000
+}
+
+fn default_round_delay_ms() -> u64 {
+    0
 }
 
 fn default_api_host() -> String {
@@ -568,6 +581,9 @@ impl Args {
             if self.rate_window_secs == default_window_duration() {
                 self.rate_window_secs = config.scan.rate_window_secs;
             }
+            if self.round_delay_ms == default_round_delay_ms() {
+                self.round_delay_ms = config.scan.round_delay_ms;
+            }
             if !self.api {
                 self.api = config.api.enabled;
             }
@@ -657,6 +673,10 @@ impl Args {
         }
         if self.rate_window_secs == 0 {
             return Err(anyhow::anyhow!("Rate window must be greater than 0"));
+        }
+
+        if self.round_delay_ms > 600_000 {
+            return Err(anyhow::anyhow!("Round delay must not exceed 600000 ms"));
         }
 
         // Validate API port

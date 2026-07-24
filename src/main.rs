@@ -641,6 +641,13 @@ async fn run_scanner_logic(
         // bitmap row exists for this round.
         db.save_metadata("last_scan_time", &chrono::Utc::now().to_rfc3339())?;
 
+        // Bound the WAL file by issuing a passive checkpoint. This is cheap
+        // (non-blocking) and keeps the WAL tail from accumulating 60+ MiB
+        // during sustained small writes.
+        if let Err(e) = db.checkpoint_wal() {
+            error!("WAL checkpoint failed: {}", e);
+        }
+
         // Print statistics
         let (total_results, unique_open) = db.get_stats()?;
         let memory_mb = db.get_memory_usage()? as f64 / 1024.0 / 1024.0;
@@ -670,8 +677,17 @@ async fn run_scanner_logic(
         }
 
         current_round = db.increment_round()?;
-        info!("Starting round {} after 5s delay...", current_round);
-        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+
+        let round_delay_ms = args.round_delay_ms;
+        if round_delay_ms > 0 {
+            info!(
+                "Starting round {} after {} ms delay...",
+                current_round, round_delay_ms
+            );
+            tokio::time::sleep(tokio::time::Duration::from_millis(round_delay_ms)).await;
+        } else {
+            info!("Starting round {} immediately...", current_round);
+        }
     }
 
     enrichment_stop.store(true, std::sync::atomic::Ordering::Relaxed);

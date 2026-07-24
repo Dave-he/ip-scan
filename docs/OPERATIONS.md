@@ -26,6 +26,7 @@ ip-scan --dry-run --target 192.168.1.0/24 --ports 22,80,443
 
 - `--concurrency` 控制连接任务，`--max-rate` 控制速率上限；CLI 会在启动前拒绝 0 值并发、超时、缓冲区和速率配置。
 - `--pipeline-buffer`、`--result-buffer` 和 `--db-batch-size` 影响内存与吞吐。
+- `--round-delay-ms` 控制循环模式下两轮扫描的间隔（毫秒，默认 0）。固定子网循环扫描（`--loop-mode` 加上窄范围 IP）建议设置 1000–5000 毫秒，避免在每次轮询都打满同一段；扫描滑动窗口或全网段时可保持 0 让循环尽快推进。
 - GeoIP/WHOIS/DNS 使用独立 `--geo-concurrency`（默认 8），服务探测使用 `--probe-concurrency`；两者不要与扫描并发简单相加。
 - SQLite 使用 WAL；定期备份数据库。循环模式保留最新两个 bitmap 轮次，旧轮次删除后由 SQLite 复用空间，不在扫描热路径执行全库 `VACUUM`。
 

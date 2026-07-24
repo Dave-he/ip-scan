@@ -76,6 +76,7 @@ cargo fmt --check
 | `--syn` | SYN 扫描，需要 root/admin 和平台抓包支持 |
 | `--max-rate` | 统一速率上限 |
 | `--loop-mode` | 持续轮询扫描 |
+| `--round-delay-ms` | 轮询扫描下两轮之间的间隔（毫秒，默认 0；扫描固定子网时建议 1000–5000 以免过度打同一段） |
 | `--skip-private` | 跳过 RFC1918 私网 IPv4 |
 | `--api` / `--api-only` | 启用 API / 仅启动 API |
 | `--database PATH` | SQLite 文件路径 |

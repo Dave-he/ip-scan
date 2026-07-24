@@ -17,6 +17,46 @@ const RETRY_DELAY_MS: u64 = 50;
 
 const JOINSET_CAPACITY_FACTOR: usize = 4;
 
+/// Lightweight state passed to each scan task. Sharing one Arc per task keeps
+/// the per-task clone cost down to a single Arc bump, which matters because
+/// the hot loop dispatches thousands of tasks per round.
+struct TaskContext {
+    metrics: ScanMetrics,
+    rate_limiter: RateLimiter,
+    result_tx: mpsc::Sender<(String, u16, bool)>,
+    scan_round: i64,
+    timeout_ms: u64,
+}
+
+#[inline]
+async fn scan_port_with_retry(
+    rate_limiter: &RateLimiter,
+    timeout_ms: u64,
+    ip: IpAddr,
+    port: u16,
+) -> bool {
+    rate_limiter.acquire().await;
+
+    let addr = SocketAddr::new(ip, port);
+    let dur = Duration::from_millis(timeout_ms);
+
+    if matches!(timeout(dur, TcpStream::connect(&addr)).await, Ok(Ok(_))) {
+        return true;
+    }
+
+    #[allow(clippy::reversed_empty_ranges)]
+    for retry in 0..MAX_RETRIES {
+        rate_limiter.acquire().await;
+        tokio::time::sleep(Duration::from_millis(RETRY_DELAY_MS)).await;
+        if matches!(timeout(dur, TcpStream::connect(&addr)).await, Ok(Ok(_))) {
+            debug!(ip = %ip, port = port, retry = retry + 1, "Retry success");
+            return true;
+        }
+    }
+
+    false
+}
+
 pub struct ConScanner {
     db: SqliteDB,
     timeout_ms: u64,
@@ -123,19 +163,6 @@ impl ConScanner {
         }
     }
 
-    fn clone_for_task(&self) -> Self {
-        ConScanner {
-            db: self.db.clone(),
-            timeout_ms: self.timeout_ms,
-            concurrent_limit: self.concurrent_limit,
-            scan_round: self.scan_round,
-            scanned_count: self.scanned_count.clone(),
-            metrics: self.metrics.clone(),
-            rate_limiter: self.rate_limiter.clone(),
-            result_tx: self.result_tx.clone(),
-        }
-    }
-
     pub async fn run_pipeline(
         &self,
         mut rx: mpsc::Receiver<IpAddr>,
@@ -145,6 +172,17 @@ impl ConScanner {
         let semaphore = Arc::new(tokio::sync::Semaphore::new(self.concurrent_limit));
         let max_inflight = self.concurrent_limit * JOINSET_CAPACITY_FACTOR;
         let progress_callback = Arc::new(progress_callback);
+        // Share lightweight references across all in-flight scan tasks so each
+        // task clone is a single Arc bump instead of cloning 6+ Arcs and two
+        // strings. The hot loop spawns thousands of tasks per round; the per-
+        // task allocation cost dominates small timeouts.
+        let task_ctx = Arc::new(TaskContext {
+            metrics: self.metrics.clone(),
+            rate_limiter: self.rate_limiter.clone(),
+            result_tx: self.result_tx.clone(),
+            scan_round: self.scan_round,
+            timeout_ms: self.timeout_ms,
+        });
         let mut join_set: JoinSet<()> = JoinSet::new();
         let mut total_dispatched: usize = 0;
 
@@ -171,7 +209,7 @@ impl ConScanner {
                     match ip {
                         Some(ip) => {
                             let ip_str = ip.to_string();
-                            let ip_type = Self::get_ip_type(&ip).to_string();
+                            let ip_type = Self::get_ip_type(&ip);
 
                             for &port in &ports {
                                 // Bound tasks while dispatching a large port range (e.g. 1-65535).
@@ -182,29 +220,33 @@ impl ConScanner {
                                         error!("Task error: {}", e);
                                     }
                                 }
-                                let scanner = self.clone_for_task();
+                                let ctx = task_ctx.clone();
                                 let ip_str_c = ip_str.clone();
-                                let ip_type_c = ip_type.clone();
                                 let sem = semaphore.clone();
 
                                 join_set.spawn(async move {
                                     let _permit = sem.acquire().await.unwrap();
 
-                                    scanner.metrics.increment_scanned();
+                                    ctx.metrics.increment_scanned();
 
-                                    let is_open = scanner.scan_port_with_retry(ip, port).await;
+                                    let is_open = scan_port_with_retry(
+                                        &ctx.rate_limiter,
+                                        ctx.timeout_ms,
+                                        ip,
+                                        port,
+                                    ).await;
 
                                     if is_open {
-                                        scanner.metrics.increment_open();
+                                        ctx.metrics.increment_open();
                                         info!(
                                             ip = %ip_str_c, port,
-                                            ip_type = ip_type_c,
-                                            round = scanner.scan_round,
+                                            ip_type = %ip_type,
+                                            round = ctx.scan_round,
                                             "Found open port"
                                         );
                                     }
 
-                                    if let Err(e) = scanner.result_tx.send((ip_str_c, port, is_open)).await {
+                                    if let Err(e) = ctx.result_tx.send((ip_str_c, port, is_open)).await {
                                         error!("Result channel send error: {}", e);
                                     }
                                 });
@@ -215,7 +257,7 @@ impl ConScanner {
 
                             let count = self.scanned_count.fetch_add(1, Ordering::Relaxed) + 1;
                             if count.is_multiple_of(200) {
-                                if let Err(e) = self.db.save_progress(&ip_str, &ip_type, self.scan_round) {
+                                if let Err(e) = self.db.save_progress(&ip_str, ip_type, self.scan_round) {
                                     error!("Progress save error: {}", e);
                                 }
                             }
@@ -237,31 +279,6 @@ impl ConScanner {
         Ok(())
     }
 
-    #[inline]
-    async fn scan_port_with_retry(&self, ip: IpAddr, port: u16) -> bool {
-        self.rate_limiter.acquire().await;
-
-        let addr = SocketAddr::new(ip, port);
-        let dur = Duration::from_millis(self.timeout_ms);
-
-        if matches!(timeout(dur, TcpStream::connect(&addr)).await, Ok(Ok(_))) {
-            return true;
-        }
-
-        #[allow(clippy::reversed_empty_ranges)]
-        for retry in 0..MAX_RETRIES {
-            self.metrics.increment_retries();
-            tokio::time::sleep(Duration::from_millis(RETRY_DELAY_MS)).await;
-            self.rate_limiter.acquire().await;
-            if matches!(timeout(dur, TcpStream::connect(&addr)).await, Ok(Ok(_))) {
-                debug!(ip = %ip, port = port, retry = retry + 1, "Retry success");
-                return true;
-            }
-        }
-
-        false
-    }
-
     #[allow(dead_code)]
     pub async fn scan_port(&self, ip: IpAddr, port: u16) -> bool {
         self.rate_limiter.acquire().await;
@@ -276,15 +293,23 @@ impl ConScanner {
         let semaphore = Arc::new(tokio::sync::Semaphore::new(self.concurrent_limit));
         let ip_str = ip.to_string();
         let ip_type = Self::get_ip_type(&ip);
+        let task_ctx = Arc::new(TaskContext {
+            metrics: self.metrics.clone(),
+            rate_limiter: self.rate_limiter.clone(),
+            result_tx: self.result_tx.clone(),
+            scan_round: self.scan_round,
+            timeout_ms: self.timeout_ms,
+        });
         let mut join_set = JoinSet::new();
 
         for port in ports {
-            let scanner = self.clone_for_task();
+            let ctx = task_ctx.clone();
             let sem = semaphore.clone();
             join_set.spawn(async move {
                 let _permit = sem.acquire().await.unwrap();
-                scanner.metrics.increment_scanned();
-                let is_open = scanner.scan_port_with_retry(ip, port).await;
+                ctx.metrics.increment_scanned();
+                let is_open =
+                    scan_port_with_retry(&ctx.rate_limiter, ctx.timeout_ms, ip, port).await;
                 (port, is_open)
             });
         }
@@ -297,7 +322,7 @@ impl ConScanner {
                 if is_open {
                     open_ports.push(port);
                     self.metrics.increment_open();
-                    info!(ip = %ip, port, ip_type = ip_type, round = self.scan_round, "Found open port");
+                    info!(ip = %ip, port, ip_type = %ip_type, round = self.scan_round, "Found open port");
                 }
             }
         }

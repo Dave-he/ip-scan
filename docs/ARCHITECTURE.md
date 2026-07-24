@@ -32,7 +32,7 @@ TCP/SYN scanner -----> port_bitmaps/open_ports_detail -----> enrichment poller
 
 ## 并行与一致性
 
-开放端口通过数据库作为耐久化边界。扫描器可以继续生产；Connect scanner 在端口分发阶段也施加有界 JoinSet 背压，即使扫描 1-65535 也不会瞬间创建数万任务。enrichment worker 每秒选取尚未补充的记录；Geo 与服务探测各自受信号量限制。写入使用幂等 UPSERT，进程中断后下一轮会继续补偿。循环扫描保留最新两个 bitmap 轮次用于变化比较，按最大轮次计算清理边界；扫描热路径不执行全库 `VACUUM`。
+开放端口通过数据库作为耐久化边界。扫描器可以继续生产；Connect scanner 在端口分发阶段也施加有界 JoinSet 背压，即使扫描 1-65535 也不会瞬间创建数万任务。所有派生任务共享一个轻量的 `Arc<TaskContext>`（只装 `metrics`、`rate_limiter`、`result_tx`、扫描轮次、超时），避免每个任务克隆整个 `ConScanner`；任务体只调用无状态的 `scan_port_with_retry` 自由函数。enrichment worker 每秒选取尚未补充的记录；Geo 与服务探测各自受信号量限制。写入使用幂等 UPSERT，进程中断后下一轮会继续补偿。循环扫描保留最新两个 bitmap 轮次用于变化比较，按最大轮次计算清理边界；扫描热路径不执行全库 `VACUUM`。每轮结束后会触发一次被动 WAL checkpoint（`PRAGMA wal_checkpoint(PASSIVE)`），避免长跑场景下 WAL 文件膨胀。
 
 Redis INFO 等协议握手只保留必要版本字段，不持久化完整敏感响应。服务探测必须只对已确认开放的端口执行，并有独立超时和并发上限。所有外部请求都应可失败、可超时、不可阻塞扫描主路径。
 

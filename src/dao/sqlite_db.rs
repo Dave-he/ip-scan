@@ -173,15 +173,32 @@ impl SqliteDB {
         // the current bitmap round in memory without changing correctness.
         conn.pragma_update(None, "cache_size", -64 * 1024i64)?;
         conn.pragma_update(None, "temp_store", "MEMORY")?;
-        // Bound the reusable WAL allocation and checkpoint stale WAL files at
-        // startup. Automatic checkpoints keep normal writes incremental.
-        conn.pragma_update(None, "wal_autocheckpoint", 1000i64)?;
+        // Lower the autocheckpoint threshold so each bitmap-round flush
+        // (~250 KiB per port per round) is usually checkpointed before the WAL
+        // bloats. 250 keeps the WAL bounded during sustained small writes.
+        conn.pragma_update(None, "wal_autocheckpoint", 250i64)?;
+        // Cap the reusable WAL allocation so a checkpoint failure cannot keep
+        // hundreds of MiB pinned indefinitely.
         conn.pragma_update(None, "journal_size_limit", 64 * 1024 * 1024i64)?;
         let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
 
         Ok(SqliteDB {
             conn: Arc::new(Mutex::new(conn)),
         })
+    }
+
+    /// Trigger a passive WAL checkpoint. Returns true when the WAL was fully
+    /// checkpointed. Use this between rounds to keep the WAL file bounded
+    /// even when the autocheckpoint threshold is not hit.
+    pub fn checkpoint_wal(&self) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        // PRAGMA wal_checkpoint(PASSIVE) returns (busy, log_pages, checkpointed_pages)
+        // and never blocks readers. We treat a non-zero checkpointed count as a
+        // successful shrink of the WAL tail.
+        let mut stmt = conn.prepare("PRAGMA wal_checkpoint(PASSIVE)")?;
+        let row: (i64, i64, i64) =
+            stmt.query_row([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
+        Ok(row.2 > 0)
     }
 
     pub fn cleanup_old_rounds(&self, keep_rounds: i64) -> Result<u64> {
@@ -420,20 +437,17 @@ impl SqliteDB {
     pub fn get_stats(&self) -> Result<(usize, usize)> {
         let conn = self.conn.lock().unwrap();
 
-        // Use cached aggregate instead of recalculating
-        let total_scanned: i64 = conn.query_row(
-            "SELECT COALESCE(SUM(open_count), 0) FROM port_bitmaps",
-            [],
-            |row| row.get(0),
+        // Single round trip keeps round-to-round overhead low; the loop runs
+        // many rounds per minute and the prior version took the connection
+        // mutex twice per round for two trivially-fast aggregates.
+        let mut stmt = conn.prepare_cached(
+            "SELECT
+                COALESCE((SELECT SUM(open_count) FROM port_bitmaps), 0),
+                COALESCE((SELECT COUNT(DISTINCT ip_address) FROM open_ports_detail), 0)",
         )?;
-
-        let unique_open: usize = conn.query_row(
-            "SELECT COUNT(DISTINCT ip_address) FROM open_ports_detail",
-            [],
-            |row| row.get(0),
-        )?;
-
-        Ok((total_scanned as usize, unique_open))
+        let (total, unique): (i64, i64) =
+            stmt.query_row([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        Ok((total as usize, unique as usize))
     }
 
     pub fn get_stats_by_port(&self, scan_round: i64) -> Result<Vec<(u16, usize)>> {

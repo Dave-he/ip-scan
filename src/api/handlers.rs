@@ -538,6 +538,7 @@ pub async fn start_scan(
         probe_timeout: 5,
         probe_concurrency: 50,
         geo_concurrency: 8,
+        round_delay_ms: 0,
     };
 
     // Get shared controller with async lock

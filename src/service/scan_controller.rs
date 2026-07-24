@@ -427,6 +427,7 @@ mod tests {
             probe_timeout: 5,
             probe_concurrency: 50,
             geo_concurrency: 8,
+            round_delay_ms: 0,
         };
 
         // This will fail because we don't have proper network setup in test,
