@@ -309,7 +309,7 @@ pub async fn get_prometheus_metrics(db: web::Data<SqliteDB>) -> impl Responder {
             let memory_bytes = db.get_memory_usage().unwrap_or(0);
             let round = db.get_current_round().unwrap_or(0);
             let body = format!(
-                "# HELP ip_scan_open_port_records Current open IP/port records\n# TYPE ip_scan_open_port_records gauge\nip_scan_open_port_records {}\n# HELP ip_scan_unique_ips Unique IPs with open ports\n# TYPE ip_scan_unique_ips gauge\nip_scan_unique_ips {}\n# HELP ip_scan_bitmap_bytes Persisted bitmap storage in bytes\n# TYPE ip_scan_database_bytes gauge\nip_scan_bitmap_bytes {}\n# HELP ip_scan_round Current scan round\n# TYPE ip_scan_round gauge\nip_scan_round {}\n",
+                "# HELP ip_scan_open_port_records Current open IP/port records\n# TYPE ip_scan_open_port_records gauge\nip_scan_open_port_records {}\n# HELP ip_scan_unique_ips Unique IPs with open ports\n# TYPE ip_scan_unique_ips gauge\nip_scan_unique_ips {}\n# HELP ip_scan_bitmap_bytes Persisted bitmap storage in bytes\n# TYPE ip_scan_bitmap_bytes gauge\nip_scan_bitmap_bytes {}\n# HELP ip_scan_round Current scan round\n# TYPE ip_scan_round gauge\nip_scan_round {}\n",
                 total_open_records, unique_ips, memory_bytes, round
             );
             HttpResponse::Ok()
