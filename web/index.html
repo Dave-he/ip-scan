@@ -3,162 +3,34 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>IP Scan Dashboard</title>
+    <meta name="theme-color" content="#070b16">
+    <title>IP Scan · Network Intelligence</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
-    <div id="toast-container"></div>
-    
-    <div class="container">
-        <header>
-            <h1>🔍 IP 扫描控制台</h1>
-            <div id="status-bar">
-                <span class="status-item">
-                    <span class="status-label">扫描状态</span>
-                    <span id="scan-status" class="status-badge status-unknown">未知</span>
-                </span>
-                <span class="status-item">
-                    <span class="status-label">当前轮次</span>
-                    <b id="scan-round">-</b>
-                </span>
-                <span class="status-item">
-                    <span class="status-label">扫描ID</span>
-                    <span id="scan-id" class="scan-id-text">-</span>
-                </span>
+<div class="noise"></div><div id="toast-box"></div>
+<div class="shell">
+    <header class="topbar">
+        <div class="brand"><div class="brand-mark"><i></i><i></i><i></i></div><div><div class="eyebrow">NETWORK INTELLIGENCE</div><h1>IP<span>SCAN</span></h1></div></div>
+        <div class="top-actions"><span class="live-dot"></span><span class="muted">LOCAL ENGINE</span><span id="clock" class="mono"></span><button class="icon-btn" onclick="refreshAll()" title="刷新数据">↻</button></div>
+    </header>
+    <main>
+        <section class="hero"><div><div class="eyebrow accent">/ CONTROL CENTER</div><h2>把网络暴露面<br><em>看得更清楚。</em></h2><p>实时发现开放服务，按 IP、端口与站点内容聚合成一张可探索的网络星图。</p></div><div class="hero-orbit"><div class="orbit o1"></div><div class="orbit o2"></div><div class="orbit-core">IP<br><b>MAP</b></div></div></section>
+        <section class="control-grid">
+            <div class="panel scan-panel"><div class="panel-title"><div><span class="section-kicker">01 / SCAN MISSION</span><h3>扫描任务</h3></div><span id="scan-status" class="badge badge-idle">IDLE</span></div>
+                <div class="config-grid"><label>目标 CIDR<input id="cfg-target" value="43.133.224.0/24" placeholder="192.168.1.0/24"></label><label>端口集合<input id="cfg-ports" value="22,80,443,8080" placeholder="22,80,443"></label><label>超时 <input id="cfg-timeout" type="number" value="800"></label><label>并发 <input id="cfg-concurrency" type="number" value="500"></label></div>
+                <div class="scan-footer"><label class="switch-label"><input type="checkbox" id="cfg-skip-private" checked><span class="switch"></span>跳过私有地址</label><div class="scan-actions"><button class="btn btn-ghost" id="btn-stop" onclick="stopScan()" disabled>停止</button><button class="btn btn-primary" id="btn-start" onclick="startScan()">开始扫描 <b>↗</b></button></div></div>
             </div>
-        </header>
-
-        <section class="config-section">
-            <div class="config-header">
-                <h2>⚙️ 扫描配置</h2>
-                <button onclick="toggleConfig()" class="btn-toggle" id="btn-toggle">
-                    <span id="toggle-icon">▼</span>
-                </button>
-            </div>
-            <div class="config-panel" id="config-panel">
-                <div class="config-grid">
-                    <div class="config-item">
-                        <label for="start-ip">起始 IP</label>
-                        <input type="text" id="start-ip" placeholder="0.0.0.0" value="0.0.0.0">
-                    </div>
-                    <div class="config-item">
-                        <label for="end-ip">结束 IP</label>
-                        <input type="text" id="end-ip" placeholder="255.255.255.255" value="255.255.255.255">
-                    </div>
-                    <div class="config-item">
-                        <label for="ports">端口</label>
-                        <input type="text" id="ports" placeholder="80,443,8080" value="80">
-                    </div>
-                    <div class="config-item">
-                        <label for="timeout">超时 (ms)</label>
-                        <input type="number" id="timeout" placeholder="500" value="500" min="100" max="5000">
-                    </div>
-                    <div class="config-item">
-                        <label for="concurrency">并发数</label>
-                        <input type="number" id="concurrency" placeholder="100" value="100" min="10" max="1000">
-                    </div>
-                    <div class="config-item config-checkbox">
-                        <label>
-                            <input type="checkbox" id="skip-private"> 跳过私有IP
-                        </label>
-                    </div>
-                </div>
-            </div>
+            <div class="panel status-panel"><div class="panel-title"><div><span class="section-kicker">02 / TELEMETRY</span><h3>引擎状态</h3></div><span class="pulse-ring"></span></div><div class="telemetry"><div><span>当前轮次</span><b id="scan-round">—</b></div><div><span>发现速率</span><b id="scan-rate">—</b></div><div><span>数据新鲜度</span><b id="freshness">SYNCING</b></div></div><div class="progress"><span id="progress-bar"></span></div><div class="status-note">自动轮询 · 每 2 秒同步一次</div></div>
         </section>
-
-        <section class="controls">
-            <button id="btn-start" onclick="startScan()" class="btn-primary">
-                <span class="btn-icon">▶️</span> 开始扫描
-            </button>
-            <button id="btn-stop" onclick="stopScan()" class="btn-danger" disabled>
-                <span class="btn-icon">⏸️</span> 停止扫描
-            </button>
-            <button onclick="fetchResults(1)" class="btn-secondary">
-                <span class="btn-icon">🔄</span> 刷新数据
-            </button>
+        <section class="metrics"><div class="metric-card accent-card"><span class="metric-icon">◉</span><span>OPEN PORTS</span><strong id="s-total">0</strong><small>可访问服务端点</small></div><div class="metric-card"><span class="metric-icon">⌁</span><span>UNIQUE IPS</span><strong id="s-unique">0</strong><small>已聚合的地址节点</small></div><div class="metric-card"><span class="metric-icon">◌</span><span>TOP PORT</span><strong id="s-topport">—</strong><small>最常见服务入口</small></div><div class="metric-card"><span class="metric-icon">◈</span><span>SCAN VELOCITY</span><strong id="metric-velocity">—</strong><small>开放端口 / 秒</small></div></section>
+        <section class="workspace panel"><div class="workspace-head"><div class="tabs"><button class="tab active" onclick="switchTab('overview',this)">总览</button><button class="tab" onclick="switchTab('map',this)">全图 IP <span class="new-pill">3D</span></button><button class="tab" onclick="switchTab('results',this)">结果明细</button><button class="tab" onclick="switchTab('history',this)">扫描历史</button></div><div class="workspace-tools"><button class="tool-btn" onclick="exportData('json')">导出 JSON</button><button class="tool-btn" onclick="exportData('csv')">导出 CSV</button></div></div>
+            <div id="tab-overview" class="tab-pane"><div class="overview-grid"><div class="chart-card"><div class="subhead"><div><span class="section-kicker">SERVICE MIX</span><h3>服务暴露分布</h3></div><span class="live-label">LIVE</span></div><div id="port-bar" class="port-bar"></div><div id="port-legend" class="port-legend"></div><div class="chart-empty" id="chart-empty">扫描数据将在这里形成实时分布</div></div><div class="quick-card"><div class="subhead"><div><span class="section-kicker">QUICK ACTIONS</span><h3>快捷入口</h3></div></div><button onclick="switchTab('map', document.querySelectorAll('.tab')[1])"><span>✦</span>打开全图 IP 星图 <b>→</b></button><button onclick="switchTab('results', document.querySelectorAll('.tab')[2])"><span>⌕</span>检索开放端口结果 <b>→</b></button><button onclick="exportData('json')"><span>⇩</span>下载完整数据快照 <b>→</b></button></div></div></div>
+            <div id="tab-map" class="tab-pane" style="display:none"><div class="map-toolbar"><div><span class="section-kicker">03 / GLOBAL IP CONSTELLATION</span><h3>全图 IP 展示</h3><p>根据 IP、端口与站点服务聚合 · 拖拽旋转 · 滚轮缩放 · 点击节点查看详情</p></div><div class="map-stats"><span><i class="dot cyan"></i>IP 节点 <b id="map-node-count">0</b></span><span><i class="dot purple"></i>服务关系 <b id="map-edge-count">0</b></span><button class="tool-btn" onclick="resetMap()">重置视角</button></div></div><div class="map-stage"><canvas id="ip-map"></canvas><div class="map-grid"></div><div class="map-hint">DRAG TO EXPLORE <span>·</span> SCROLL TO ZOOM</div><div id="node-detail" class="node-detail"><button onclick="closeNodeDetail()">×</button><span class="section-kicker">NODE INSPECTOR</span><h4 id="detail-ip">—</h4><p id="detail-meta">选择一个节点查看聚合信息</p><div id="detail-services"></div></div><div id="map-empty" class="map-empty"><div>✦</div><h3>等待扫描数据</h3><p>启动一次扫描后，这里会生成你的网络星图。</p></div></div></div></div>
+            <div id="tab-results" class="tab-pane" style="display:none"><div class="table-toolbar"><div class="search-wrap">⌕<input id="search-input" placeholder="搜索 IP、端口或地域…" oninput="onSearch()"></div><span id="result-count" class="muted"></span></div><div class="table-scroll"><table><thead><tr><th>IP ADDRESS</th><th>PORT</th><th>PROTO</th><th>GEO</th><th>ROUND</th><th>FIRST SEEN</th><th>DNS</th></tr></thead><tbody id="tb-results"></tbody></table></div><div class="pager"><button class="pager-btn" id="pg-prev" onclick="page(-1)" disabled>← 上一页</button><span id="pg-info" class="muted">—</span><button class="pager-btn" id="pg-next" onclick="page(1)" disabled>下一页 →</button></div></div>
+            <div id="tab-history" class="tab-pane" style="display:none"><div class="table-scroll"><table><thead><tr><th>ROUND</th><th>START</th><th>END</th><th>STATUS</th><th>DETAILS</th></tr></thead><tbody id="tb-history"></tbody></table></div></div>
         </section>
-
-
-        <section class="stats-cards">
-            <div class="card">
-                <div class="card-icon">📊</div>
-                <h3>总开放端口数</h3>
-                <p id="stat-total" class="stat-number">0</p>
-            </div>
-            <div class="card">
-                <div class="card-icon">🌐</div>
-                <h3>独立 IP 数</h3>
-                <p id="stat-unique" class="stat-number">0</p>
-            </div>
-            <div class="card">
-                <div class="card-icon">🎯</div>
-                <h3>最热门端口</h3>
-                <p id="stat-top-port" class="stat-text">-</p>
-            </div>
-        </section>
-
-        <div class="tabs">
-            <button class="tab-btn active" onclick="switchTab('results')">扫描结果</button>
-            <button class="tab-btn" onclick="switchTab('history')">扫描历史</button>
-        </div>
-
-        <section id="tab-results" class="tab-content active">
-            <div class="table-controls">
-                <button onclick="exportData('csv')" class="btn-secondary">
-                    <span class="btn-icon">📄</span> 导出 CSV
-                </button>
-                 <button onclick="exportData('json')" class="btn-secondary">
-                    <span class="btn-icon">📄</span> 导出 JSON
-                </button>
-            </div>
-            <div class="table-responsive">
-                <table id="results-table">
-                    <thead>
-                        <tr>
-                            <th>IP 地址</th>
-                            <th>端口</th>
-                            <th>类型</th>
-                            <th>地理位置</th>
-                            <th>扫描轮次</th>
-                            <th>首次发现时间</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <!-- Populated by JS -->
-                    </tbody>
-                </table>
-            </div>
-            <div class="pagination">
-                <button id="prev-page" onclick="changePage(-1)" disabled>上一页</button>
-                <span id="page-info">第 1 页</span>
-                <button id="next-page" onclick="changePage(1)" disabled>下一页</button>
-            </div>
-        </section>
-
-        <section id="tab-history" class="tab-content">
-             <div class="table-controls">
-                <button onclick="fetchHistory()" class="btn-secondary">
-                    <span class="btn-icon">🔄</span> 刷新历史
-                </button>
-             </div>
-             <div class="table-responsive">
-                <table id="history-table">
-                    <thead>
-                        <tr>
-                            <th>扫描轮次</th>
-                            <th>开始时间</th>
-                            <th>结束时间</th>
-                            <th>状态</th>
-                            <th>扫描详情</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <!-- Populated by JS -->
-                    </tbody>
-                </table>
-            </div>
-        </section>
-    </div>
-    <script src="app.js"></script>
-</body>
-</html>
+    </main>
+    <footer><span>IPSCAN / NETWORK INTELLIGENCE CONSOLE</span><span>v2.0 <i class="footer-dot"></i> SYSTEM READY</span></footer>
+</div><script src="app.js"></script>
+</body></html>
