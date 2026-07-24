@@ -7,7 +7,7 @@ pub struct RateLimiter {
     semaphore: Arc<Semaphore>,
     max_rate: usize,
     window_duration: Duration,
-    last_reset_ms: AtomicU64,
+    last_reset_ms: Arc<AtomicU64>,
 }
 
 impl RateLimiter {
@@ -16,28 +16,43 @@ impl RateLimiter {
             semaphore: Arc::new(Semaphore::new(max_rate)),
             max_rate,
             window_duration,
-            last_reset_ms: AtomicU64::new(now_ms()),
+            last_reset_ms: Arc::new(AtomicU64::new(now_ms())),
         }
     }
 
     pub async fn acquire(&self) {
-        let now = now_ms();
-        let last = self.last_reset_ms.load(Ordering::Relaxed);
-        let window_ms = self.window_duration.as_millis() as u64;
+        let window_ms = (self.window_duration.as_millis() as u64).max(1);
+        loop {
+            let now = now_ms();
+            let last = self.last_reset_ms.load(Ordering::Acquire);
 
-        if now.saturating_sub(last) >= window_ms
-            && self
-                .last_reset_ms
-                .compare_exchange(last, now, Ordering::AcqRel, Ordering::Relaxed)
-                .is_ok()
-        {
-            let current = self.semaphore.available_permits();
-            if current < self.max_rate {
-                self.semaphore.add_permits(self.max_rate - current);
+            if now.saturating_sub(last) >= window_ms
+                && self
+                    .last_reset_ms
+                    .compare_exchange(last, now, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+            {
+                let current = self.semaphore.available_permits();
+                if current < self.max_rate {
+                    self.semaphore.add_permits(self.max_rate - current);
+                }
             }
-        }
 
-        let _ = self.semaphore.acquire().await;
+            if let Ok(permit) = self.semaphore.try_acquire() {
+                // A token must stay consumed until the next fixed-window refill.
+                // Dropping the permit would return it immediately and silently
+                // disable rate limiting.
+                permit.forget();
+                return;
+            }
+
+            let last = self.last_reset_ms.load(Ordering::Acquire);
+            let wait_ms = last
+                .saturating_add(window_ms)
+                .saturating_sub(now_ms())
+                .max(1);
+            tokio::time::sleep(Duration::from_millis(wait_ms)).await;
+        }
     }
 }
 
@@ -47,7 +62,7 @@ impl Clone for RateLimiter {
             semaphore: self.semaphore.clone(),
             max_rate: self.max_rate,
             window_duration: self.window_duration,
-            last_reset_ms: AtomicU64::new(self.last_reset_ms.load(Ordering::Relaxed)),
+            last_reset_ms: self.last_reset_ms.clone(),
         }
     }
 }
@@ -72,5 +87,17 @@ mod tests {
             limiter.acquire().await;
         }
         assert!(start.elapsed() < Duration::from_millis(100));
+    }
+
+    #[tokio::test]
+    async fn test_rate_limiter_waits_for_next_window_and_shares_clone_budget() {
+        let limiter = RateLimiter::new(2, Duration::from_millis(80));
+        let clone = limiter.clone();
+        limiter.acquire().await;
+        clone.acquire().await;
+
+        let start = std::time::Instant::now();
+        limiter.acquire().await;
+        assert!(start.elapsed() >= Duration::from_millis(60));
     }
 }
