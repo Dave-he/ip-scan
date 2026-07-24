@@ -23,8 +23,8 @@ cargo fmt --check
 cargo test --offline
 ```
 
-涉及 API、CLI、数据库或扫描流水线时，还要运行对应的最小本地验证，并记录结果。不得把“编译成功”当作端到端扫描完成的证明。
+涉及 API、CLI、数据库或扫描流水线时，还要运行对应的最小本地验证（包括健康检查、指标端点或数据库迁移），并记录结果。不得把“编译成功”当作端到端扫描完成的证明。
 
 ## 文档同步
 
-新增 CLI 参数、API 字段、数据库字段、探测器或运行约束时，必须同步 README、`docs/ARCHITECTURE.md`、`docs/OPERATIONS.md` 和相关 OpenAPI 注释。
+新增 CLI 参数、API 字段、数据库字段、探测器或运行约束时，必须同步 README、`docs/ARCHITECTURE.md`、`docs/OPERATIONS.md`、`docs/DATA_DICTIONARY.md` 和相关 OpenAPI 注释。

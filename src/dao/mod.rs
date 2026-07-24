@@ -1,3 +1,3 @@
 mod sqlite_db;
 
-pub use sqlite_db::SqliteDB;
+pub use sqlite_db::{PortChange, SqliteDB};

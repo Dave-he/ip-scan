@@ -1,9 +1,12 @@
-use crate::model::{ipv4_to_index, IpGeoInfo, IpServiceSummary, PortBitmap, ServiceInfo};
+use crate::model::{
+    index_to_ipv4, ipv4_to_index, IpGeoInfo, IpServiceSummary, PortBitmap, ServiceInfo,
+};
 use anyhow::Result;
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use utoipa::ToSchema;
 
 #[derive(Clone)]
 pub struct SqliteDB {
@@ -906,6 +909,40 @@ impl SqliteDB {
         Ok(summaries)
     }
 
+    /// Compare two persisted IPv4 bitmap rounds and return bounded port changes.
+    pub fn get_bitmap_changes(
+        &self,
+        round: i64,
+        port: u16,
+        limit: usize,
+    ) -> Result<Vec<PortChange>> {
+        let conn = self.conn.lock().unwrap();
+        let load = |scan_round: i64| -> Result<Option<PortBitmap>> {
+            let result: rusqlite::Result<Vec<u8>> = conn.query_row(
+                "SELECT bitmap FROM port_bitmaps WHERE port = ?1 AND ip_type = 'IPv4' AND scan_round = ?2",
+                params![port, scan_round], |row| row.get(0));
+            match result {
+                Ok(blob) => Ok(Some(PortBitmap::from_blob(&blob)?)),
+                Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+                Err(e) => Err(e.into()),
+            }
+        };
+        let Some(current) = load(round)? else {
+            return Ok(Vec::new());
+        };
+        let previous = load(round - 1)?.unwrap_or_else(PortBitmap::new);
+        Ok(current
+            .changed_indices(&previous, limit)
+            .into_iter()
+            .map(|index| PortChange {
+                ip_address: index_to_ipv4(index),
+                port,
+                round,
+                is_open: current.get(index),
+            })
+            .collect())
+    }
+
     pub fn count_ips_with_service_info(&self) -> Result<usize> {
         let conn = self.conn.lock().unwrap();
         let count: i64 = conn.query_row(
@@ -929,6 +966,14 @@ pub struct ScanResultDetail {
     pub country: Option<String>,
     pub city: Option<String>,
     pub reverse_dns: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, ToSchema)]
+pub struct PortChange {
+    pub ip_address: String,
+    pub port: u16,
+    pub round: i64,
+    pub is_open: bool,
 }
 
 /// Scan history record

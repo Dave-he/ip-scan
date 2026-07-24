@@ -24,9 +24,18 @@ pub fn config_results_routes(cfg: &mut web::ServiceConfig) {
 
 /// Configure statistics routes
 pub fn config_stats_routes(cfg: &mut web::ServiceConfig) {
+    cfg.route("/healthz", web::get().to(handlers::get_health));
     cfg.service(
         web::scope("/stats")
             .route("", web::get().to(handlers::get_stats))
+            .route(
+                "/prometheus",
+                web::get().to(handlers::get_prometheus_metrics),
+            )
+            .route(
+                "/changes/{round}/{port}",
+                web::get().to(handlers::get_bitmap_changes),
+            )
             .route("/top-ports", web::get().to(handlers::get_top_ports)),
     );
 }
@@ -70,6 +79,9 @@ pub fn config_service_routes(cfg: &mut web::ServiceConfig) {
         handlers::get_results_by_port,
         handlers::get_results_by_round,
         handlers::get_stats,
+        handlers::get_prometheus_metrics,
+        handlers::get_bitmap_changes,
+        handlers::get_health,
         handlers::get_top_ports,
         handlers::get_scan_status,
         handlers::get_scan_history,
@@ -95,11 +107,13 @@ pub fn config_service_routes(cfg: &mut web::ServiceConfig) {
             models::ServiceInfoResponse,
             models::IpServiceSummaryResponse,
             models::ServiceSummaryListResponse,
+            crate::dao::PortChange,
         )
     ),
     tags(
         (name = "Results", description = "Scan results endpoints"),
         (name = "Statistics", description = "Statistics endpoints"),
+        (name = "Operations", description = "Health and monitoring endpoints"),
         (name = "Scan Control", description = "Scan control endpoints"),
         (name = "Export", description = "Data export endpoints"),
         (name = "Services", description = "Service detection endpoints"),

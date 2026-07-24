@@ -25,16 +25,15 @@ impl RateLimiter {
         let last = self.last_reset_ms.load(Ordering::Relaxed);
         let window_ms = self.window_duration.as_millis() as u64;
 
-        if now.saturating_sub(last) >= window_ms {
-            if self
+        if now.saturating_sub(last) >= window_ms
+            && self
                 .last_reset_ms
                 .compare_exchange(last, now, Ordering::AcqRel, Ordering::Relaxed)
                 .is_ok()
-            {
-                let current = self.semaphore.available_permits();
-                if current < self.max_rate {
-                    self.semaphore.add_permits(self.max_rate - current);
-                }
+        {
+            let current = self.semaphore.available_permits();
+            if current < self.max_rate {
+                self.semaphore.add_permits(self.max_rate - current);
             }
         }
 

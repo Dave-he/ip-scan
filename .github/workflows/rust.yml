@@ -67,7 +67,7 @@ jobs:
   # 多平台构建和测试
   test:
     name: Test Suite
-    needs: [fmt, clippy]
+    needs: [fmt, clippy, docs]
     strategy:
       fail-fast: false
       matrix:
@@ -368,3 +368,21 @@ jobs:
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false
+
+  # 文档与 AI 规则门禁
+  docs:
+    name: Documentation and AI Rules Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Validate required documentation
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in README.md AGENTS.md docs/ARCHITECTURE.md docs/OPERATIONS.md docs/DATA_DICTIONARY.md; do
+            test -s "$file"
+          done
+          grep -q "cargo test" AGENTS.md
+          grep -q "只扫描" AGENTS.md
+          grep -q "DATA_DICTIONARY" README.md
+          grep -q "risk_score" docs/DATA_DICTIONARY.md

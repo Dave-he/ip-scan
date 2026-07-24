@@ -30,12 +30,12 @@ impl ServiceProber {
         Self {
             http_client: client,
             banner_timeout: Duration::from_secs(BANNER_READ_TIMEOUT_SECS),
-            concurrency,
+            concurrency: concurrency.max(1),
         }
     }
 
     pub async fn probe_ip(&self, ip: &str, open_ports: &[u16]) -> Vec<ServiceInfo> {
-        let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(self.concurrency));
+        let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(self.concurrency.max(1)));
         let mut join_set = tokio::task::JoinSet::new();
 
         for &port in open_ports {
@@ -73,6 +73,12 @@ impl ServiceProber {
         if let Some(ref banner) = info.banner {
             info.service_version =
                 ServiceInfo::parse_version_from_banner(&info.service_name, banner);
+        }
+        if info.service_name == "redis" {
+            // Redis INFO is key/value text; retain only the version, not the full dump.
+            if let Some(version) = Self::extract_key_value(&info.banner, "redis_version") {
+                info.service_version = Some(format!("Redis {}", version));
+            }
         }
 
         Some(info)
@@ -127,12 +133,10 @@ impl ServiceProber {
                         .split_whitespace()
                         .collect::<Vec<_>>()
                         .join(" ");
-                    let trimmed = if cleaned.len() > 300 {
-                        &cleaned[..300]
-                    } else {
-                        &cleaned
-                    };
-                    info.http_body_preview = Some(trimmed.to_string());
+                    // Truncate by characters rather than byte offsets so multibyte
+                    // response bodies (for example Chinese HTML) cannot panic.
+                    let trimmed = cleaned.chars().take(300).collect::<String>();
+                    info.http_body_preview = Some(trimmed);
                     info.http_body_hash = Some(self.compute_body_hash(&body));
                     let technologies =
                         Self::detect_web_technologies(&body, info.http_server.as_deref());
@@ -141,8 +145,35 @@ impl ServiceProber {
                     }
                 }
 
+                let favicon_url = format!("{}://{}:{}/favicon.ico", scheme, ip, port);
+                if let Ok(favicon) = self.http_client.get(&favicon_url).send().await {
+                    if favicon.status().is_success() {
+                        if let Ok(bytes) = favicon.bytes().await {
+                            if !bytes.is_empty() && bytes.len() <= 1024 * 1024 {
+                                let hash = Self::compute_bytes_hash(&bytes);
+                                let marker = format!("favicon:{}", hash);
+                                info.service_version = Some(match info.service_version.take() {
+                                    Some(existing) => format!("{}, {}", existing, marker),
+                                    None => marker,
+                                });
+                            }
+                        }
+                    }
+                }
+
                 if ServiceInfo::is_probable_https_port(port) {
-                    Self::extract_tls_info_blocking(ip, port, info);
+                    let ip_owned = ip.to_string();
+                    let tls = tokio::task::spawn_blocking(move || {
+                        Self::extract_tls_info_blocking(&ip_owned, port)
+                    })
+                    .await
+                    .unwrap_or_default();
+                    info.tls_subject = tls.0;
+                    info.tls_issuer = tls.1;
+                    info.tls_version = tls.2;
+                    if tls.3.is_some() {
+                        info.os_guess = tls.3;
+                    }
                 }
             }
             Err(e) => {
@@ -152,19 +183,28 @@ impl ServiceProber {
         }
     }
 
-    fn extract_tls_info_blocking(ip: &str, port: u16, info: &mut ServiceInfo) {
+    fn extract_tls_info_blocking(
+        ip: &str,
+        port: u16,
+    ) -> (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) {
+        let mut info = ServiceInfo::new(ip.to_string(), port);
         let connector = match native_tls::TlsConnector::builder()
             .danger_accept_invalid_certs(true)
             .build()
         {
             Ok(c) => c,
-            Err(_) => return,
+            Err(_) => return (None, None, None, None),
         };
 
         let addr = format!("{}:{}", ip, port);
         let sock_addr: std::net::SocketAddr = match addr.parse() {
             Ok(a) => a,
-            Err(_) => return,
+            Err(_) => return (None, None, None, None),
         };
 
         let tcp_stream = match std::net::TcpStream::connect_timeout(
@@ -172,25 +212,29 @@ impl ServiceProber {
             Duration::from_secs(PROBE_TIMEOUT_SECS),
         ) {
             Ok(s) => s,
-            Err(_) => return,
+            Err(_) => return (None, None, None, None),
         };
 
-        Self::read_ttl_from_stream(&tcp_stream, info);
+        Self::read_ttl_from_stream(&tcp_stream, &mut info);
 
-        match connector.connect(ip, tcp_stream) {
-            Ok(tls_stream) => {
-                if let Ok(Some(cert)) = tls_stream.peer_certificate() {
-                    if let Ok(der_bytes) = cert.to_der() {
-                        let cn = extract_cn_from_der(&der_bytes);
-                        info.tls_subject =
-                            Some(cn.unwrap_or_else(|| "(certificate present)".to_string()));
-                        info.tls_issuer = Some("present".to_string());
-                    }
+        if let Ok(tls_stream) = connector.connect(ip, tcp_stream) {
+            if let Ok(Some(cert)) = tls_stream.peer_certificate() {
+                if let Ok(der_bytes) = cert.to_der() {
+                    let cn = extract_cn_from_der(&der_bytes);
+                    info.tls_subject =
+                        Some(cn.unwrap_or_else(|| "(certificate present)".to_string()));
+                    info.tls_issuer = Some("present".to_string());
                 }
-                info.tls_version = Some("TLS".to_string());
             }
-            Err(_) => {}
+            info.tls_version = Some("TLS".to_string());
         }
+
+        (
+            info.tls_subject,
+            info.tls_issuer,
+            info.tls_version,
+            info.os_guess,
+        )
     }
 
     #[cfg(unix)]
@@ -275,6 +319,9 @@ impl ServiceProber {
             "redis" => {
                 if banner.contains("redis_version") {
                     info.banner = Some("Redis".to_string());
+                    if let Some(version) = Self::extract_key_value_text(banner, "redis_version") {
+                        info.service_version = Some(format!("Redis {}", version));
+                    }
                 }
             }
             "mysql" if !banner.is_empty() => {
@@ -323,6 +370,21 @@ impl ServiceProber {
             .collect()
     }
 
+    fn extract_key_value(banner: &Option<String>, key: &str) -> Option<String> {
+        banner
+            .as_deref()
+            .and_then(|value| Self::extract_key_value_text(value, key))
+    }
+
+    fn extract_key_value_text(text: &str, key: &str) -> Option<String> {
+        text.lines().find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            (name.trim() == key)
+                .then(|| value.trim().to_string())
+                .filter(|v| !v.is_empty())
+        })
+    }
+
     fn extract_html_title(&self, html: &str) -> Option<String> {
         let lower = html.to_lowercase();
         if let Some(start) = lower.find("<title>") {
@@ -338,9 +400,13 @@ impl ServiceProber {
     }
 
     fn compute_body_hash(&self, body: &str) -> String {
+        Self::compute_bytes_hash(body.as_bytes())
+    }
+
+    fn compute_bytes_hash(bytes: &[u8]) -> String {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        body.hash(&mut hasher);
+        bytes.hash(&mut hasher);
         format!("{:016x}", hasher.finish())
     }
 
@@ -401,8 +467,8 @@ fn reverse_lookup_impl(ip: &str) -> Option<String> {
     }
 
     let addr = format!("{}:0", ip);
-    if let Ok(mut addrs) = std::net::ToSocketAddrs::to_socket_addrs(&addr) {
-        while let Some(sock_addr) = addrs.next() {
+    if let Ok(addrs) = std::net::ToSocketAddrs::to_socket_addrs(&addr) {
+        for sock_addr in addrs {
             let resolved = sock_addr.ip().to_string();
             if resolved != ip {
                 return Some(resolved);
@@ -580,4 +646,44 @@ fn find_byte_sequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ServiceProber;
+    use crate::model::ServiceInfo;
+    use tokio::io::AsyncWriteExt;
+    use tokio::net::TcpListener;
+
+    #[tokio::test]
+    async fn http_preview_truncates_multibyte_body_without_panicking() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let body = "网络资产页面 ".repeat(100);
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: text/html\r\n\r\n{}",
+            body.len(),
+            body
+        );
+
+        let server = tokio::spawn(async move {
+            // The probe requests `/` and then `/favicon.ico`; answer both so the
+            // test exercises the complete HTTP enrichment path.
+            for _ in 0..2 {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    return;
+                };
+                let _ = stream.write_all(response.as_bytes()).await;
+            }
+        });
+
+        let prober = ServiceProber::new(2, 1);
+        let mut info = ServiceInfo::new("127.0.0.1".to_string(), port);
+        prober.probe_http("127.0.0.1", port, &mut info).await;
+
+        let preview = info.http_body_preview.expect("HTTP preview should exist");
+        assert!(preview.chars().count() <= 300);
+        assert!(info.http_body_hash.is_some());
+        server.await.unwrap();
+    }
 }

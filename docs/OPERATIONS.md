@@ -10,7 +10,7 @@
 
 ## DNS 与外部请求
 
-反向 DNS 默认读取系统 resolver 配置；容器或受限网络可设置 `IP_SCAN_DNS_SERVER`。GeoIP、WHOIS、DNS、HTTP/TLS enrichment 都可能产生外部流量，应在组织网络策略允许时启用。
+反向 DNS 默认读取系统 resolver 配置；容器或受限网络可设置 `IP_SCAN_DNS_SERVER`。GeoIP、WHOIS、DNS、HTTP/TLS 和 favicon enrichment 都可能产生外部流量，应在组织网络策略允许时启用；启用服务探测会比纯端口扫描产生更多目标侧请求。
 
 ## 性能调优
 
@@ -18,6 +18,10 @@
 - `--pipeline-buffer`、`--result-buffer` 和 `--db-batch-size` 影响内存与吞吐。
 - 服务探测使用独立 `--probe-concurrency`，不要与扫描并发简单相加。
 - SQLite 使用 WAL；定期备份数据库，循环模式会清理过旧 bitmap 轮次。
+
+## 监控
+
+`/api/v1/stats/changes?round=3&port=443` 可对比相邻扫描轮次，返回新增/消失的 IPv4 端口状态，单次最多 10000 条。负载均衡器可检查 `/api/v1/healthz`；数据库不可用时返回 503。Prometheus 可抓取 `/api/v1/stats/prometheus`，当前提供开放记录数、唯一 IP 数、位图存储大小和扫描轮次。生产环境应通过内网、反向代理和访问控制保护该端点。
 
 ## 故障排查
 

@@ -234,6 +234,28 @@ pub async fn get_results_by_round(
     }
 }
 
+/// Lightweight health endpoint for load balancers and orchestration.
+#[utoipa::path(
+    get,
+    path = "/api/v1/healthz",
+    responses(
+        (status = 200, description = "Database is available"),
+        (status = 503, description = "Database is unavailable")
+    ),
+    tag = "Operations"
+)]
+pub async fn get_health(db: web::Data<SqliteDB>) -> impl Responder {
+    match db.get_current_round() {
+        Ok(round) => HttpResponse::Ok()
+            .json(serde_json::json!({"status": "ok", "database": "ok", "round": round})),
+        Err(e) => {
+            error!("Health check failed: {}", e);
+            HttpResponse::ServiceUnavailable()
+                .json(serde_json::json!({"status": "degraded", "database": "error"}))
+        }
+    }
+}
+
 /// Get scan statistics
 #[utoipa::path(
     get,
@@ -265,6 +287,74 @@ pub async fn get_stats(db: web::Data<SqliteDB>) -> impl Responder {
             error!("Failed to get statistics: {}", e);
             HttpResponse::InternalServerError().json(ErrorResponse {
                 error: "Failed to retrieve statistics".to_string(),
+                code: Some("DATABASE_ERROR".to_string()),
+            })
+        }
+    }
+}
+
+/// Export operational metrics in Prometheus text format.
+#[utoipa::path(
+    get,
+    path = "/api/v1/stats/prometheus",
+    responses(
+        (status = 200, description = "Prometheus metrics", body = String),
+        (status = 500, description = "Failed to collect metrics")
+    ),
+    tag = "Operations"
+)]
+pub async fn get_prometheus_metrics(db: web::Data<SqliteDB>) -> impl Responder {
+    match db.get_stats() {
+        Ok((total_open_records, unique_ips)) => {
+            let memory_bytes = db.get_memory_usage().unwrap_or(0);
+            let round = db.get_current_round().unwrap_or(0);
+            let body = format!(
+                "# HELP ip_scan_open_port_records Current open IP/port records\n# TYPE ip_scan_open_port_records gauge\nip_scan_open_port_records {}\n# HELP ip_scan_unique_ips Unique IPs with open ports\n# TYPE ip_scan_unique_ips gauge\nip_scan_unique_ips {}\n# HELP ip_scan_bitmap_bytes Persisted bitmap storage in bytes\n# TYPE ip_scan_database_bytes gauge\nip_scan_bitmap_bytes {}\n# HELP ip_scan_round Current scan round\n# TYPE ip_scan_round gauge\nip_scan_round {}\n",
+                total_open_records, unique_ips, memory_bytes, round
+            );
+            HttpResponse::Ok()
+                .content_type("text/plain; version=0.0.4")
+                .body(body)
+        }
+        Err(e) => {
+            error!("Failed to export Prometheus metrics: {}", e);
+            HttpResponse::InternalServerError().finish()
+        }
+    }
+}
+
+/// Return bounded open/closed changes between two bitmap rounds.
+#[utoipa::path(
+    get,
+    path = "/api/v1/stats/changes/{round}/{port}",
+    params(
+        ("round" = i64, Path, description = "Current scan round"),
+        ("port" = u16, Path, description = "Port to compare")
+    ),
+    responses(
+        (status = 200, description = "Changed IP addresses", body = Vec<crate::dao::PortChange>),
+        (status = 400, description = "Invalid round or port", body = ErrorResponse),
+        (status = 500, description = "Database error", body = ErrorResponse)
+    ),
+    tag = "Statistics"
+)]
+pub async fn get_bitmap_changes(
+    db: web::Data<SqliteDB>,
+    path: web::Path<(i64, u16)>,
+) -> impl Responder {
+    let (round, port) = path.into_inner();
+    if round < 1 || port == 0 {
+        return HttpResponse::BadRequest().json(ErrorResponse {
+            error: "Invalid round or port".to_string(),
+            code: Some("INVALID_CHANGE_QUERY".to_string()),
+        });
+    }
+    match db.get_bitmap_changes(round, port, 10_000) {
+        Ok(changes) => HttpResponse::Ok().json(changes),
+        Err(e) => {
+            error!("Failed to retrieve bitmap changes: {}", e);
+            HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Failed to retrieve bitmap changes".to_string(),
                 code: Some("DATABASE_ERROR".to_string()),
             })
         }

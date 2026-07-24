@@ -319,7 +319,7 @@ async fn run_scanner_logic(
 ) -> Result<()> {
     use model::{parse_port_range, IpRange};
     use service::{ConScanner, SynScanner};
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
 
     // Setup shutdown flag
@@ -564,83 +564,9 @@ async fn run_scanner_logic(
             }
         }
 
-        // Geolocation Enrichment
-        if let Some(geo) = &geo_service {
-            info!("Starting geolocation enrichment...");
-            match db.get_ips_missing_geo(1000) {
-                Ok(ips_to_enrich) => {
-                    if !ips_to_enrich.is_empty() {
-                        info!("Found {} IPs missing geolocation info", ips_to_enrich.len());
-                        let enriched = Arc::new(AtomicUsize::new(0));
-                        let geo_arc = Arc::new(geo.clone());
-                        let db_arc = Arc::new(db.clone());
-                        let sem = Arc::new(tokio::sync::Semaphore::new(5));
-                        let mut tasks = tokio::task::JoinSet::new();
-                        for ip in ips_to_enrich {
-                            let geo_c = geo_arc.clone();
-                            let db_c = db_arc.clone();
-                            let sem_c = sem.clone();
-                            let enriched_c = enriched.clone();
-                            tasks.spawn(async move {
-                                let _permit = sem_c.acquire().await.unwrap();
-                                match tokio::time::timeout(
-                                    std::time::Duration::from_secs(6),
-                                    geo_c.lookup(&ip),
-                                )
-                                .await
-                                {
-                                    Ok(Ok(info)) => {
-                                        if let Err(e) = db_c.save_ip_geo_info(&info) {
-                                            error!("Failed to save geo info for {}: {}", ip, e);
-                                        } else {
-                                            enriched_c.fetch_add(1, Ordering::Relaxed);
-                                        }
-                                    }
-                                    Ok(Err(e)) => {
-                                        error!("Failed to lookup geo info for {}: {}", ip, e)
-                                    }
-                                    Err(_) => error!("Geo lookup timed out for {}", ip),
-                                }
-                            });
-                        }
-                        while tasks.join_next().await.is_some() {}
-                        info!(
-                            "Enriched {} IPs with geolocation data",
-                            enriched.load(Ordering::Relaxed)
-                        );
-                    }
-                }
-                Err(e) => error!("Failed to fetch IPs for enrichment: {}", e),
-            }
-        }
-
-        // Service Detection Enrichment
-        if args.probe_service {
-            info!("Starting service detection...");
-            match db.get_ips_missing_service_probe(200) {
-                Ok(ip_ports) => {
-                    if !ip_ports.is_empty() {
-                        info!("Found {} IPs to probe for service info", ip_ports.len());
-                        let prober =
-                            service::ServiceProber::new(args.probe_timeout, args.probe_concurrency);
-                        let mut probed_count = 0;
-
-                        for (ip, ports) in ip_ports {
-                            let services = prober.probe_ip(&ip, &ports).await;
-                            if !services.is_empty() {
-                                if let Err(e) = db.save_service_info_batch(&services) {
-                                    error!("Failed to save service info for {}: {}", ip, e);
-                                } else {
-                                    probed_count += 1;
-                                }
-                            }
-                        }
-                        info!("Probed {} IPs for service info", probed_count);
-                    }
-                }
-                Err(e) => error!("Failed to fetch IPs for service probing: {}", e),
-            }
-        }
+        // Enrichment runs continuously in the background while scanning. Keeping it
+        // out of the round critical path prevents duplicate GeoIP/service probes and
+        // lets the scanner move directly to its next round.
 
         // Print statistics
         let (total_results, unique_open) = db.get_stats()?;

@@ -37,6 +37,10 @@ cargo build --release
 ./target/release/ip-scan --api --target 192.168.1.0/24 --ports 22,80,443 --probe-service
 # 默认: http://127.0.0.1:9090
 # OpenAPI: http://127.0.0.1:9090/api-docs/openapi.json
+# Prometheus: http://127.0.0.1:9090/api/v1/stats/prometheus
+# Health: http://127.0.0.1:9090/api/v1/healthz
+# Health: http://127.0.0.1:9090/api/v1/healthz
+# Round changes: http://127.0.0.1:9090/api/v1/stats/changes?round=3&port=443
 ```
 
 本地测试：
@@ -90,6 +94,7 @@ curl http://127.0.0.1:9090/api-docs/openapi.json
 
 - 示例配置：[`config.toml`](config.toml)
 - 架构与流水线：[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+- 数据字典：[`docs/DATA_DICTIONARY.md`](docs/DATA_DICTIONARY.md)
 - 运维与安全：[`docs/OPERATIONS.md`](docs/OPERATIONS.md)
 - AI/自动化修改规则：[`AGENTS.md`](AGENTS.md)
 - 技能说明：[`SKILL_README.md`](SKILL_README.md)

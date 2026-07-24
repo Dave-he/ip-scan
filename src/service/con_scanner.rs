@@ -152,10 +152,8 @@ impl ConScanner {
             let inflight = join_set.len();
 
             if inflight >= max_inflight {
-                if let Some(res) = join_set.join_next().await {
-                    if let Err(e) = res {
-                        error!("Task error: {}", e);
-                    }
+                if let Some(Err(e)) = join_set.join_next().await {
+                    error!("Task error: {}", e);
                 }
                 continue;
             }
@@ -242,6 +240,7 @@ impl ConScanner {
             return true;
         }
 
+        #[allow(clippy::reversed_empty_ranges)]
         for retry in 0..MAX_RETRIES {
             self.metrics.increment_retries();
             tokio::time::sleep(Duration::from_millis(RETRY_DELAY_MS)).await;

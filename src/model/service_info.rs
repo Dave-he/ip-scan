@@ -126,10 +126,8 @@ impl ServiceInfo {
                     }
                 }
             }
-            "http" | "https" | "http-alt" | "https-alt" => {
-                if !banner.is_empty() {
-                    return Some(banner.to_string());
-                }
+            "http" | "https" | "http-alt" | "https-alt" if !banner.is_empty() => {
+                return Some(banner.to_string());
             }
             _ => {}
         }

@@ -61,6 +61,32 @@ impl PortBitmap {
         }
     }
 
+    pub fn changed_indices(&self, previous: &Self, limit: usize) -> Vec<u32> {
+        let mut changes = Vec::new();
+        for segment_id in 0..=u8::MAX as u32 {
+            let current = self.segments.get(&segment_id);
+            let old = previous.segments.get(&segment_id);
+            let max_len = current.map_or(0, Vec::len).max(old.map_or(0, Vec::len));
+            for byte_index in 0..max_len {
+                let a = current
+                    .and_then(|v| v.get(byte_index))
+                    .copied()
+                    .unwrap_or(0);
+                let b = old.and_then(|v| v.get(byte_index)).copied().unwrap_or(0);
+                let mut changed = a ^ b;
+                while changed != 0 {
+                    let bit = changed.trailing_zeros();
+                    changes.push((segment_id << 24) | ((byte_index as u32) << 3) | bit);
+                    if changes.len() >= limit {
+                        return changes;
+                    }
+                    changed &= changed - 1;
+                }
+            }
+        }
+        changes
+    }
+
     pub fn count_ones(&self) -> usize {
         self.segments
             .values()
