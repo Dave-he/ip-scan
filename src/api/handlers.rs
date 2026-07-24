@@ -501,6 +501,7 @@ pub async fn start_scan(
         concurrency: 100,
         database: "scan_results.db".to_string(),
         verbose: false,
+        dry_run: false,
         loop_mode: false,
         ipv4: true,
         ipv6: false,
@@ -528,6 +529,7 @@ pub async fn start_scan(
         probe_service: false,
         probe_timeout: 5,
         probe_concurrency: 50,
+        geo_concurrency: 8,
     };
 
     // Get shared controller with async lock

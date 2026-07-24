@@ -17,6 +17,9 @@ use service::GeoService;
 
 fn main() -> Result<()> {
     let args = Args::parse().merge_with_config()?;
+    if args.dry_run {
+        return print_scan_plan(&args);
+    }
     let worker_threads = args.worker_threads.unwrap_or_else(|| {
         std::thread::available_parallelism()
             .map(|n| n.get())
@@ -28,6 +31,46 @@ fn main() -> Result<()> {
         .build()
         .unwrap();
     rt.block_on(async_main(args))
+}
+
+fn print_scan_plan(args: &Args) -> Result<()> {
+    let ports = model::parse_port_range(&args.ports).map_err(|e| anyhow::anyhow!(e))?;
+    let (start, end) = args
+        .start_ip
+        .as_deref()
+        .zip(args.end_ip.as_deref())
+        .map(|(start, end)| (start.to_string(), end.to_string()))
+        .unwrap_or_else(Args::get_default_ipv4_range);
+    let mode = if args.syn { "SYN" } else { "TCP connect" };
+    let api = if args.api_only {
+        "API-only"
+    } else if args.no_api {
+        "disabled"
+    } else {
+        "enabled"
+    };
+    if args.output_format == "json" {
+        println!(
+            "{}",
+            serde_json::json!({
+                "target_start": start, "target_end": end, "ports": ports,
+                "port_expression": args.ports, "mode": mode,
+                "concurrency": args.concurrency, "geo_concurrency": args.geo_concurrency,
+                "service_probing": args.probe_service, "database": args.database, "api": api
+            })
+        );
+    } else {
+        println!("Resolved scan plan:");
+        println!("  target: {} - {}", start, end);
+        println!("  ports: {} ({} ports)", args.ports, ports.len());
+        println!("  mode: {}", mode);
+        println!("  concurrency: {}", args.concurrency);
+        println!("  geo concurrency: {}", args.geo_concurrency);
+        println!("  service probing: {}", args.probe_service);
+        println!("  database: {}", args.database);
+        println!("  api: {}", api);
+    }
+    Ok(())
 }
 
 async fn async_main(args: Args) -> Result<()> {
@@ -256,34 +299,41 @@ async fn enrich_discovered_assets(
     let mut jobs = tokio::task::JoinSet::new();
     if let Some(geo) = geo {
         let ips = db.get_ips_missing_geo(256)?;
+        let geo_concurrency = args.geo_concurrency;
         let geo = geo.clone();
         let db = db.clone();
         jobs.spawn(async move {
-            let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(8));
-            let mut tasks = tokio::task::JoinSet::new();
+            // Geo/WHOIS/DNS are external I/O; cap them independently from
+            // port concurrency to avoid overwhelming the resolver or provider.
+            let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(geo_concurrency));
+            let mut tasks: tokio::task::JoinSet<Result<Option<crate::model::IpGeoInfo>>> =
+                tokio::task::JoinSet::new();
             for ip in ips {
                 let permit = semaphore.clone().acquire_owned().await.unwrap();
                 let geo = geo.clone();
-                let db = db.clone();
                 tasks.spawn(async move {
                     let _permit = permit;
-                    if let Ok(Ok(info)) =
-                        tokio::time::timeout(tokio::time::Duration::from_secs(6), geo.lookup(&ip))
-                            .await
+                    match tokio::time::timeout(tokio::time::Duration::from_secs(6), geo.lookup(&ip))
+                        .await
                     {
-                        db.save_ip_geo_info(&info)?;
+                        Ok(Ok(info)) => Ok(Some(info)),
+                        Ok(Err(_)) | Err(_) => Ok(None),
                     }
-                    Ok::<(), anyhow::Error>(())
                 });
             }
+            let mut infos = Vec::new();
             while let Some(result) = tasks.join_next().await {
-                result??;
+                if let Some(info) = result?? {
+                    infos.push(info);
+                }
             }
+            db.save_ip_geo_info_batch(&infos)?;
             Ok::<(), anyhow::Error>(())
         });
     }
     if args.probe_service {
         let ip_ports = db.get_ips_missing_service_probe(128)?;
+        let attempted_ips: Vec<String> = ip_ports.iter().map(|(ip, _)| ip.clone()).collect();
         let db = db.clone();
         let prober = service::ServiceProber::new(args.probe_timeout, args.probe_concurrency);
         jobs.spawn(async move {
@@ -303,6 +353,7 @@ async fn enrich_discovered_assets(
             while let Some(result) = tasks.join_next().await {
                 result??;
             }
+            db.mark_service_probe_attempts(&attempted_ips)?;
             Ok::<(), anyhow::Error>(())
         });
     }

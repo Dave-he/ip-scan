@@ -174,6 +174,14 @@ impl ConScanner {
                             let ip_type = Self::get_ip_type(&ip).to_string();
 
                             for &port in &ports {
+                                // Bound tasks while dispatching a large port range (e.g. 1-65535).
+                                // Without this backpressure, one IP could allocate tens of
+                                // thousands of tasks before the outer loop gets a chance to reap.
+                                while join_set.len() >= max_inflight {
+                                    if let Some(Err(e)) = join_set.join_next().await {
+                                        error!("Task error: {}", e);
+                                    }
+                                }
                                 let scanner = self.clone_for_task();
                                 let ip_str_c = ip_str.clone();
                                 let ip_type_c = ip_type.clone();

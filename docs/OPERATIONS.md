@@ -1,5 +1,15 @@
 # 运维与安全
 
+## 启动前预览
+
+使用 `--dry-run` 可以解析配置文件、目标、端口、并发和 enrichment 选项，而不会打开网络 socket 或创建数据库：
+
+```bash
+ip-scan --dry-run --target 192.168.1.0/24 --ports 22,80,443
+```
+
+适合 CI 配置检查、容器启动探针和生产任务变更前确认。自动化脚本可增加 `--output-format json` 获取结构化计划。
+
 ## 最小安全配置
 
 - 只扫描书面授权的网段。
@@ -14,9 +24,9 @@
 
 ## 性能调优
 
-- `--concurrency` 控制连接任务，`--max-rate` 控制速率上限。
+- `--concurrency` 控制连接任务，`--max-rate` 控制速率上限；CLI 会在启动前拒绝 0 值并发、超时、缓冲区和速率配置。
 - `--pipeline-buffer`、`--result-buffer` 和 `--db-batch-size` 影响内存与吞吐。
-- 服务探测使用独立 `--probe-concurrency`，不要与扫描并发简单相加。
+- GeoIP/WHOIS/DNS 使用独立 `--geo-concurrency`（默认 8），服务探测使用 `--probe-concurrency`；两者不要与扫描并发简单相加。
 - SQLite 使用 WAL；定期备份数据库，循环模式会清理过旧 bitmap 轮次。
 
 ## 监控
@@ -30,3 +40,21 @@
 3. Geo 没有结果时检查 MaxMind 路径或关闭 `--no-geo` 以外的配置。
 4. 服务信息为空时确认端口开放、目标允许应用层握手，避免把超时误认为关闭。
 5. 使用 `cargo test --offline`、`cargo fmt --check` 验证构建健康。
+
+## 依赖安全审计
+
+使用以下命令执行不联网审计（使用本机已缓存的 RustSec 数据库）：
+
+```bash
+cargo audit --no-fetch --stale
+```
+
+当前锁定依赖审计已通过升级 reqwest 0.12 / rustls 0.23 消除了 rustls-webpki 的漏洞，但 WHOIS 传递依赖仍触发 RUSTSEC-2024-0421；同时仍报告 `bincode`、`proc-macro-error`、`trust-dns` 的 unmaintained 警告，以及 `anyhow`/`rand` 的未来公告。CI 只对后两项 unsound advisory 保留显式、可审计的 ignore；升级依赖时必须重新运行测试、检查 TLS/WHOIS 行为，并删除对应 ignore，而不是静默隐藏审计结果。
+
+## SQLite 性能
+
+数据库初始化时启用 WAL、NORMAL 同步级别、5 秒 busy timeout、64 MiB page cache 和内存临时表。busy timeout 用于平滑扫描器与 enrichment worker 的短时写入竞争；不要把它当成无限重试，长时间锁竞争仍应通过降低并发或拆分数据库实例处理。
+
+## 服务探测退避
+
+服务探测失败或返回空结果时会记录 `service_probe_state`，同一 IP 默认至少间隔一小时才会重试，避免不可达主机在后台轮询中持续消耗连接、超时和日志资源。发现新的开放服务后，仍会通过 `service_info` 的幂等记录继续处理。

@@ -123,7 +123,14 @@ impl ServiceProber {
                     present.join(",")
                 ));
 
-                if let Ok(body) = resp.text().await {
+                // Fetch the page and favicon concurrently: favicon is independent
+                // enrichment and must not add a full extra RTT to every HTTP probe.
+                let favicon_url = format!("{}://{}:{}/favicon.ico", scheme, ip, port);
+                let favicon_request = self.http_client.get(&favicon_url).send();
+                let body_request = resp.text();
+                let (body_result, favicon_result) = tokio::join!(body_request, favicon_request);
+
+                if let Ok(body) = body_result {
                     if let Some(title) = self.extract_html_title(&body) {
                         info.http_title = Some(title);
                     }
@@ -133,8 +140,6 @@ impl ServiceProber {
                         .split_whitespace()
                         .collect::<Vec<_>>()
                         .join(" ");
-                    // Truncate by characters rather than byte offsets so multibyte
-                    // response bodies (for example Chinese HTML) cannot panic.
                     let trimmed = cleaned.chars().take(300).collect::<String>();
                     info.http_body_preview = Some(trimmed);
                     info.http_body_hash = Some(self.compute_body_hash(&body));
@@ -145,8 +150,7 @@ impl ServiceProber {
                     }
                 }
 
-                let favicon_url = format!("{}://{}:{}/favicon.ico", scheme, ip, port);
-                if let Ok(favicon) = self.http_client.get(&favicon_url).send().await {
+                if let Ok(favicon) = favicon_result {
                     if favicon.status().is_success() {
                         if let Ok(bytes) = favicon.bytes().await {
                             if !bytes.is_empty() && bytes.len() <= 1024 * 1024 {

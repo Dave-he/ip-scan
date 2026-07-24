@@ -364,6 +364,7 @@ mod tests {
             concurrency: 100,
             database: "test.db".to_string(),
             verbose: false,
+            dry_run: false,
             loop_mode: false,
             ipv4: true,
             ipv6: false,
@@ -391,6 +392,7 @@ mod tests {
             probe_service: false,
             probe_timeout: 5,
             probe_concurrency: 50,
+            geo_concurrency: 8,
         };
 
         // This will fail because we don't have proper network setup in test,

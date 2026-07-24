@@ -2,6 +2,32 @@ use clap::Parser;
 use serde::Deserialize;
 use std::path::PathBuf;
 
+fn parse_positive_usize(value: &str) -> Result<usize, String> {
+    value
+        .parse::<usize>()
+        .map_err(|_| "must be a positive integer".to_string())
+        .and_then(|n| {
+            if n > 0 {
+                Ok(n)
+            } else {
+                Err("must be greater than zero".to_string())
+            }
+        })
+}
+
+fn parse_positive_u64(value: &str) -> Result<u64, String> {
+    value
+        .parse::<u64>()
+        .map_err(|_| "must be a positive integer".to_string())
+        .and_then(|n| {
+            if n > 0 {
+                Ok(n)
+            } else {
+                Err("must be greater than zero".to_string())
+            }
+        })
+}
+
 #[derive(Parser, Debug, Clone)]
 #[command(name = "ip-scan")]
 #[command(author = "IP Scanner")]
@@ -35,11 +61,11 @@ pub struct Args {
     pub ports: String,
 
     /// Connection timeout in milliseconds
-    #[arg(short = 't', long, env = "SCAN_TIMEOUT", default_value = "500")]
+    #[arg(short = 't', long, env = "SCAN_TIMEOUT", default_value = "500", value_parser = parse_positive_u64)]
     pub timeout: u64,
 
     /// Number of concurrent connections (I/O-bound: set high)
-    #[arg(short = 'c', long, env = "SCAN_CONCURRENCY", default_value = "500")]
+    #[arg(short = 'c', long, env = "SCAN_CONCURRENCY", default_value = "500", value_parser = parse_positive_usize)]
     pub concurrency: usize,
 
     /// Database file path
@@ -50,6 +76,10 @@ pub struct Args {
         default_value = "scan_results.db"
     )]
     pub database: String,
+
+    /// Print the resolved scan plan and exit without opening sockets or a database.
+    #[arg(long, env = "SCAN_DRY_RUN", action = clap::ArgAction::SetTrue)]
+    pub dry_run: bool,
 
     /// Verbose output
     #[arg(short = 'v', long, env = "SCAN_VERBOSE")]
@@ -138,19 +168,23 @@ pub struct Args {
     pub probe_timeout: u64,
 
     /// Service probe concurrency
-    #[arg(long, env = "SCAN_PROBE_CONCURRENCY", default_value = "50")]
+    #[arg(long, env = "SCAN_PROBE_CONCURRENCY", default_value = "50", value_parser = parse_positive_usize)]
     pub probe_concurrency: usize,
+
+    /// GeoIP/WHOIS/reverse-DNS enrichment concurrency
+    #[arg(long, env = "SCAN_GEO_CONCURRENCY", default_value = "8", value_parser = parse_positive_usize)]
+    pub geo_concurrency: usize,
 
     #[arg(long, env = "SCAN_WORKER_THREADS")]
     pub worker_threads: Option<usize>,
 
-    #[arg(long, env = "SCAN_PIPELINE_BUFFER", default_value = "2000")]
+    #[arg(long, env = "SCAN_PIPELINE_BUFFER", default_value = "2000", value_parser = parse_positive_usize)]
     pub pipeline_buffer: usize,
 
-    #[arg(long, env = "SCAN_RESULT_BUFFER", default_value = "10000")]
+    #[arg(long, env = "SCAN_RESULT_BUFFER", default_value = "10000", value_parser = parse_positive_usize)]
     pub result_buffer: usize,
 
-    #[arg(long, env = "SCAN_DB_BATCH_SIZE", default_value = "2000")]
+    #[arg(long, env = "SCAN_DB_BATCH_SIZE", default_value = "2000", value_parser = parse_positive_usize)]
     pub db_batch_size: usize,
 
     #[arg(long, env = "SCAN_FLUSH_INTERVAL_MS", default_value = "1000")]
@@ -209,6 +243,8 @@ pub struct ScanConfig {
     pub probe_timeout: u64,
     #[serde(default = "default_probe_concurrency")]
     pub probe_concurrency: usize,
+    #[serde(default = "default_geo_concurrency")]
+    pub geo_concurrency: usize,
 
     pub worker_threads: Option<usize>,
     #[serde(default = "default_pipeline_buffer")]
@@ -291,6 +327,7 @@ impl Default for ScanConfig {
             probe_service: false,
             probe_timeout: default_probe_timeout(),
             probe_concurrency: default_probe_concurrency(),
+            geo_concurrency: default_geo_concurrency(),
             worker_threads: None,
             pipeline_buffer: default_pipeline_buffer(),
             result_buffer: default_result_buffer(),
@@ -391,6 +428,10 @@ fn default_probe_timeout() -> u64 {
 
 fn default_probe_concurrency() -> usize {
     50
+}
+
+fn default_geo_concurrency() -> usize {
+    8
 }
 
 impl Args {
@@ -498,6 +539,9 @@ impl Args {
             if self.probe_concurrency == default_probe_concurrency() {
                 self.probe_concurrency = config.scan.probe_concurrency;
             }
+            if self.geo_concurrency == default_geo_concurrency() {
+                self.geo_concurrency = config.scan.geo_concurrency;
+            }
             if self.worker_threads.is_none() {
                 self.worker_threads = config.scan.worker_threads;
             }
@@ -592,6 +636,9 @@ impl Args {
         if self.pipeline_buffer == 0 {
             return Err(anyhow::anyhow!("Pipeline buffer must be greater than 0"));
         }
+        if self.geo_concurrency == 0 {
+            return Err(anyhow::anyhow!("Geo concurrency must be greater than 0"));
+        }
         if self.result_buffer == 0 {
             return Err(anyhow::anyhow!("Result buffer must be greater than 0"));
         }
@@ -665,6 +712,13 @@ impl Args {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_rejects_zero_runtime_limits() {
+        assert!(Args::try_parse_from(["ip-scan", "--concurrency", "0"]).is_err());
+        assert!(Args::try_parse_from(["ip-scan", "--timeout", "0"]).is_err());
+        assert!(Args::try_parse_from(["ip-scan", "--probe-concurrency", "0"]).is_err());
+    }
 
     #[test]
     fn test_is_private_ipv4() {

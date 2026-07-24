@@ -6,6 +6,7 @@ use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use utoipa::ToSchema;
 
 #[derive(Clone)]
@@ -98,6 +99,16 @@ impl SqliteDB {
             [],
         )?;
 
+        // Track failed/empty service probes so the background worker does not
+        // hammer the same unresponsive host every polling interval.
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS service_probe_state (
+                ip_address TEXT PRIMARY KEY,
+                last_probe TEXT NOT NULL
+            )",
+            [],
+        )?;
+
         // Service info table
         conn.execute(
             "CREATE TABLE IF NOT EXISTS service_info (
@@ -155,6 +166,13 @@ impl SqliteDB {
         // Optimization: Set WAL mode for better concurrency
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
+        // Keep short writer bursts from failing with SQLITE_BUSY while the
+        // enrichment worker and scanner flush concurrently.
+        conn.busy_timeout(Duration::from_secs(5))?;
+        // Negative cache_size is expressed in KiB; 64 MiB keeps hot indexes and
+        // the current bitmap round in memory without changing correctness.
+        conn.pragma_update(None, "cache_size", -64 * 1024i64)?;
+        conn.pragma_update(None, "temp_store", "MEMORY")?;
 
         Ok(SqliteDB {
             conn: Arc::new(Mutex::new(conn)),
@@ -184,28 +202,33 @@ impl SqliteDB {
         Ok(deleted as u64)
     }
 
-    pub fn save_ip_geo_info(&self, info: &IpGeoInfo) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        let timestamp = Utc::now().to_rfc3339();
-
-        conn.execute(
-            "INSERT INTO ip_details (ip_address, country, region, city, isp, asn, reverse_dns, source, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-             ON CONFLICT(ip_address)
-             DO UPDATE SET country = ?2, region = ?3, city = ?4, isp = ?5, asn = ?6, reverse_dns = ?7, source = ?8, updated_at = ?9",
-            params![
-                info.ip,
-                info.country,
-                info.region,
-                info.city,
-                info.isp,
-                info.asn,
-                info.reverse_dns,
-                info.source,
-                timestamp
-            ],
-        )?;
-
+    /// Persist multiple GeoIP records in one SQLite transaction.
+    pub fn save_ip_geo_info_batch(&self, infos: &[IpGeoInfo]) -> Result<()> {
+        if infos.is_empty() {
+            return Ok(());
+        }
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO ip_details (ip_address, country, region, city, isp, asn, reverse_dns, source, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) ON CONFLICT(ip_address) DO UPDATE SET country=?2, region=?3, city=?4, isp=?5, asn=?6, reverse_dns=?7, source=?8, updated_at=?9"
+            )?;
+            let timestamp = Utc::now().to_rfc3339();
+            for info in infos {
+                stmt.execute(params![
+                    info.ip,
+                    info.country,
+                    info.region,
+                    info.city,
+                    info.isp,
+                    info.asn,
+                    info.reverse_dns,
+                    info.source,
+                    timestamp
+                ])?;
+            }
+        }
+        tx.commit()?;
         Ok(())
     }
 
@@ -856,17 +879,37 @@ impl SqliteDB {
         Ok(results)
     }
 
+    pub fn mark_service_probe_attempts(&self, ips: &[String]) -> Result<()> {
+        if ips.is_empty() {
+            return Ok(());
+        }
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let now = Utc::now().to_rfc3339();
+        {
+            let mut stmt = tx.prepare("INSERT INTO service_probe_state (ip_address, last_probe) VALUES (?1, ?2) ON CONFLICT(ip_address) DO UPDATE SET last_probe = ?2")?;
+            for ip in ips {
+                stmt.execute(params![ip, now])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn get_ips_missing_service_probe(&self, limit: usize) -> Result<Vec<(String, Vec<u16>)>> {
         let conn = self.conn.lock().unwrap();
+        let retry_before = (Utc::now() - chrono::Duration::hours(1)).to_rfc3339();
         let mut stmt = conn.prepare(
             "SELECT o.ip_address, GROUP_CONCAT(o.port) as ports
              FROM open_ports_detail o
              WHERE o.ip_address NOT IN (SELECT DISTINCT ip_address FROM service_info)
+               AND (NOT EXISTS (SELECT 1 FROM service_probe_state s WHERE s.ip_address = o.ip_address)
+                    OR EXISTS (SELECT 1 FROM service_probe_state s WHERE s.ip_address = o.ip_address AND s.last_probe < ?2))
              GROUP BY o.ip_address
              LIMIT ?1",
         )?;
         let results = stmt
-            .query_map([limit as i64], |row| {
+            .query_map(params![limit as i64, retry_before], |row| {
                 let ip: String = row.get(0)?;
                 let ports_str: String = row.get(1)?;
                 let ports: Vec<u16> = ports_str
@@ -1021,6 +1064,26 @@ mod tests {
         let new_round = db.increment_round().unwrap();
         assert_eq!(new_round, 2);
         assert_eq!(db.get_current_round().unwrap(), 2);
+
+        // Service probe attempts are retried only after the one-hour backoff.
+        let pending = db.get_ips_missing_service_probe(10).unwrap();
+        assert_eq!(pending, vec![("192.168.1.1".to_string(), vec![80])]);
+        db.mark_service_probe_attempts(&["192.168.1.1".to_string()])
+            .unwrap();
+        assert!(db.get_ips_missing_service_probe(10).unwrap().is_empty());
+        {
+            let conn = db.conn.lock().unwrap();
+            let old_probe = (Utc::now() - chrono::Duration::hours(2)).to_rfc3339();
+            conn.execute(
+                "UPDATE service_probe_state SET last_probe = ?1 WHERE ip_address = ?2",
+                params![old_probe, "192.168.1.1"],
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            db.get_ips_missing_service_probe(10).unwrap(),
+            vec![("192.168.1.1".to_string(), vec![80])]
+        );
 
         // Test progress
         db.save_progress("192.168.1.1", "IPv4", 1).unwrap();

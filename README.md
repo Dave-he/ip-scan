@@ -14,6 +14,10 @@ IP-Scan 不只是“端口是否打开”：扫描器写入开放端口的同时
 - **接口**：Actix Web API、Swagger/OpenAPI、Web 管理界面、JSON/CSV 导出。
 - **工程性**：限速、并发控制、超时、断点续扫、循环扫描、旧轮次清理、结构化日志。
 
+## 依赖安全
+
+HTTP enrichment 使用 reqwest 0.12 / rustls 0.23。WHOIS 依赖链仍有待迁移到维护中的 DNS 库；提交依赖变更前运行 `cargo audit --no-fetch --stale`，并审阅 CI 中的每一个显式 advisory ignore。
+
 ## 安全边界
 
 只扫描明确授权的资产。默认建议跳过私网或限制到实验网段；不要把公网大范围扫描、Banner 探测或高并发作为默认行为。SYN、服务探测和 TLS/HTTP 请求可能被目标侧记录或拦截，请遵守法律、合同和组织策略。
@@ -22,6 +26,9 @@ IP-Scan 不只是“端口是否打开”：扫描器写入开放端口的同时
 
 ```bash
 cargo build --release
+
+# 先解析配置和目标，不创建数据库、不连接目标
+./target/release/ip-scan --dry-run --target 192.168.1.0/24 --ports 22,80,443
 ./target/release/ip-scan \
   --target 192.168.1.0/24 \
   --ports 22,80,443,3306,5432,6379,8080 \
@@ -55,6 +62,7 @@ cargo fmt --check
 | 参数 | 说明 |
 |---|---|
 | `--target` | IP、CIDR 或起止范围，例如 `10.0.0.0/24` |
+| `--dry-run` | 输出合并后的扫描计划并退出，不打开 socket 或数据库；配合 `--output-format json` 可供脚本读取 |
 | `--start-ip/--end-ip` | 传统范围写法 |
 | `--ports` | `80`、`22,80,443`、`1-1024`、混合范围 |
 | `--preset quick\|standard\|deep` | 预设扫描端口集合 |
@@ -64,6 +72,7 @@ cargo fmt --check
 | `--probe-concurrency` | 单 IP 内服务探测并发数 |
 | `--no-geo` | 禁用 GeoIP enrichment |
 | `--geoip-db PATH` | MaxMind 数据库路径（可选） |
+| `--geo-concurrency` | GeoIP、WHOIS 和反向 DNS 并发数，默认 8 |
 | `--syn` | SYN 扫描，需要 root/admin 和平台抓包支持 |
 | `--max-rate` | 统一速率上限 |
 | `--loop-mode` | 持续轮询扫描 |
@@ -71,7 +80,7 @@ cargo fmt --check
 | `--api` / `--api-only` | 启用 API / 仅启动 API |
 | `--database PATH` | SQLite 文件路径 |
 
-所有 CLI 选项也支持对应的 `SCAN_*` 环境变量；完整参数以 `ip-scan --help` 为准。反向 DNS 支持 IPv4 与压缩形式 IPv6，默认读取系统 `/etc/resolv.conf`，也可通过 `IP_SCAN_DNS_SERVER=192.0.2.53` 指定 DNS。
+所有 CLI 选项也支持对应的 `SCAN_*` 环境变量；并发数、超时、缓冲区和速率不能设置为 0，非法配置会在启动前直接报错。完整参数以 `ip-scan --help` 为准。反向 DNS 支持 IPv4 与压缩形式 IPv6，默认读取系统 `/etc/resolv.conf`，也可通过 `IP_SCAN_DNS_SERVER=192.0.2.53` 指定 DNS。
 
 ## 数据与 API
 
@@ -94,6 +103,7 @@ curl http://127.0.0.1:9090/api-docs/openapi.json
 
 - 示例配置：[`config.toml`](config.toml)
 - 架构与流水线：[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+- 前后端协议契约：[`docs/API_CONTRACT.md`](docs/API_CONTRACT.md)
 - 数据字典：[`docs/DATA_DICTIONARY.md`](docs/DATA_DICTIONARY.md)
 - 运维与安全：[`docs/OPERATIONS.md`](docs/OPERATIONS.md)
 - AI/自动化修改规则：[`AGENTS.md`](AGENTS.md)
