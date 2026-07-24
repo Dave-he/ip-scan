@@ -91,6 +91,20 @@ pub struct PaginatedResults {
     pub total_pages: usize,
 }
 
+/// Versioned protocol metadata used by independent frontends to discover a compatible backend.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct SystemInfoResponse {
+    pub protocol: String,
+    pub api_version: String,
+    pub service: String,
+    pub version: String,
+    pub status: String,
+    pub database: String,
+    pub server_time: String,
+    pub capabilities: Vec<String>,
+    pub endpoints: Vec<String>,
+}
+
 /// Statistics response
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct StatsResponse {

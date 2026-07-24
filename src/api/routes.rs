@@ -25,6 +25,7 @@ pub fn config_results_routes(cfg: &mut web::ServiceConfig) {
 /// Configure statistics routes
 pub fn config_stats_routes(cfg: &mut web::ServiceConfig) {
     cfg.route("/healthz", web::get().to(handlers::get_health));
+    cfg.route("/system", web::get().to(handlers::get_system_info));
     cfg.service(
         web::scope("/stats")
             .route("", web::get().to(handlers::get_stats))
@@ -80,6 +81,7 @@ pub fn config_service_routes(cfg: &mut web::ServiceConfig) {
         handlers::get_results_by_round,
         handlers::get_stats,
         handlers::get_prometheus_metrics,
+        handlers::get_system_info,
         handlers::get_bitmap_changes,
         handlers::get_health,
         handlers::get_top_ports,
@@ -93,6 +95,7 @@ pub fn config_service_routes(cfg: &mut web::ServiceConfig) {
         schemas(
             models::ScanResult,
             models::PaginatedResults,
+            models::SystemInfoResponse,
             models::StatsResponse,
             models::PortStats,
             models::TopPortsResponse,

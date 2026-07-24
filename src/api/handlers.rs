@@ -256,6 +256,55 @@ pub async fn get_health(db: web::Data<SqliteDB>) -> impl Responder {
     }
 }
 
+/// Discover the backend protocol, capabilities and endpoint contract.
+#[utoipa::path(
+    get,
+    path = "/api/v1/system",
+    responses(
+        (status = 200, description = "Backend protocol metadata", body = SystemInfoResponse),
+        (status = 503, description = "Backend is degraded", body = SystemInfoResponse)
+    ),
+    tag = "Operations"
+)]
+pub async fn get_system_info(db: web::Data<SqliteDB>) -> impl Responder {
+    let (status, database) = match db.get_current_round() {
+        Ok(_) => ("ready", "ok"),
+        Err(_) => ("degraded", "error"),
+    };
+    let response = SystemInfoResponse {
+        protocol: "ip-scan".to_string(),
+        api_version: "v1".to_string(),
+        service: env!("CARGO_PKG_NAME").to_string(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        status: status.to_string(),
+        database: database.to_string(),
+        server_time: chrono::Utc::now().to_rfc3339(),
+        capabilities: vec![
+            "scan.control".to_string(),
+            "scan.status".to_string(),
+            "results.pagination".to_string(),
+            "results.export".to_string(),
+            "services.enrichment".to_string(),
+            "visualization.ip-map".to_string(),
+            "observability.prometheus".to_string(),
+        ],
+        endpoints: vec![
+            "/healthz".to_string(),
+            "/system".to_string(),
+            "/stats".to_string(),
+            "/results".to_string(),
+            "/services".to_string(),
+            "/scan".to_string(),
+            "/export".to_string(),
+        ],
+    };
+    if status == "ready" {
+        HttpResponse::Ok().json(response)
+    } else {
+        HttpResponse::ServiceUnavailable().json(response)
+    }
+}
+
 /// Get scan statistics
 #[utoipa::path(
     get,

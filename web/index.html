@@ -14,6 +14,11 @@
         <div class="brand"><div class="brand-mark"><i></i><i></i><i></i></div><div><div class="eyebrow">NETWORK INTELLIGENCE</div><h1>IP<span>SCAN</span></h1></div></div>
         <div class="top-actions"><span class="live-dot"></span><span class="muted">LOCAL ENGINE</span><span id="clock" class="mono"></span><button class="icon-btn" onclick="refreshAll()" title="刷新数据">↻</button></div>
     </header>
+    <section class="connection-bar" aria-label="后端服务连接">
+        <div class="connection-leading"><span id="connection-dot" class="connection-dot offline"></span><div><span class="section-kicker">BACKEND CONNECTION</span><strong id="connection-label">未连接后端</strong></div></div>
+        <div class="connection-form"><label for="backend-url">服务地址</label><input id="backend-url" placeholder="http://127.0.0.1:9090 或 /api/v1" autocomplete="url"><button class="btn btn-connect" id="btn-connect" onclick="connectBackend()">连接服务</button></div>
+        <div class="connection-meta"><span id="backend-version">协议未检测</span><span id="backend-capabilities">—</span></div>
+    </section>
     <main>
         <section class="hero"><div><div class="eyebrow accent">/ CONTROL CENTER</div><h2>把网络暴露面<br><em>看得更清楚。</em></h2><p>实时发现开放服务，按 IP、端口与站点内容聚合成一张可探索的网络星图。</p></div><div class="hero-orbit"><div class="orbit o1"></div><div class="orbit o2"></div><div class="orbit-core">IP<br><b>MAP</b></div></div></section>
         <section class="control-grid">
