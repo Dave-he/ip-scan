@@ -927,13 +927,18 @@ impl SqliteDB {
         limit: usize,
         offset: usize,
     ) -> Result<Vec<IpServiceSummary>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT ip_address FROM (SELECT DISTINCT ip_address FROM service_info) LIMIT ?1 OFFSET ?2",
-        )?;
-        let ips: Vec<String> = stmt
-            .query_map([limit as i64, offset as i64], |row| row.get(0))?
-            .collect::<Result<Vec<_>, _>>()?;
+        // Release the connection mutex before loading each IP's services.
+        // get_service_info_by_ip acquires the same non-reentrant mutex.
+        let ips: Vec<String> = {
+            let conn = self.conn.lock().unwrap();
+            let mut stmt = conn.prepare(
+                "SELECT ip_address FROM (SELECT DISTINCT ip_address FROM service_info) LIMIT ?1 OFFSET ?2",
+            )?;
+            let rows = stmt
+                .query_map([limit as i64, offset as i64], |row| row.get(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            rows
+        };
 
         let mut summaries = Vec::new();
         for ip in ips {
@@ -1032,6 +1037,29 @@ pub struct ScanHistoryRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn service_summary_query_does_not_reenter_connection_mutex() {
+        let db = SqliteDB::new(":memory:").unwrap();
+        let mut service = ServiceInfo::new("192.0.2.10".to_string(), 443);
+        service.service_name = "https".to_string();
+        service.protocol = "https".to_string();
+        db.save_service_info(&service).unwrap();
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result = db.get_all_ip_service_summaries(10, 0);
+            let _ = tx.send(result);
+        });
+
+        let summaries = rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("service summary query deadlocked")
+            .unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].ip, "192.0.2.10");
+        assert_eq!(summaries[0].services.len(), 1);
+    }
 
     #[test]
     fn test_database_operations() {
