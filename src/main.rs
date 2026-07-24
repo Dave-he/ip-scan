@@ -143,8 +143,8 @@ async fn run_api_server(args: &Args) -> Result<()> {
     let db = SqliteDB::new(&args.database)?;
     info!("Database initialized: {}", args.database);
 
-    // Start API server
-    start_api_server(db, args).await
+    // Start API server without a CLI-managed scanner.
+    start_api_server(db, args, service::RuntimeScanState::default()).await
 }
 
 /// Run only the scanner
@@ -183,22 +183,34 @@ async fn run_combined(args: &Args) -> Result<()> {
     let db = SqliteDB::new(&args.database)?;
     info!("Database initialized: {}", args.database);
 
-    // Start scanner in background
+    // Start scanner in background and expose its lifecycle to the API. This
+    // prevents the API controller from reporting Idle or starting a second scan.
+    db.save_metadata("scan_status", "running")?;
+    db.save_metadata("last_scan_start_time", &chrono::Utc::now().to_rfc3339())?;
+    let runtime_scan_state = service::RuntimeScanState::with_cli_scan_running(true);
+    let scanner_state = runtime_scan_state.clone();
     let scanner_args = args.clone();
     let scanner_db = db.clone();
+    let scanner_status_db = db.clone();
     let scanner_handle = tokio::spawn(async move {
         let geo = if !scanner_args.no_geo {
             Some(GeoService::new(scanner_args.geoip_db.as_deref()))
         } else {
             None
         };
-        if let Err(e) = run_scanner_logic(scanner_db, &scanner_args, geo).await {
+        let result = run_scanner_logic(scanner_db, &scanner_args, geo).await;
+        scanner_state.set_cli_scan_running(false);
+        let final_status = if result.is_ok() { "stopped" } else { "error" };
+        let _ = scanner_status_db.save_metadata("scan_status", final_status);
+        let _ = scanner_status_db
+            .save_metadata("last_scan_stop_time", &chrono::Utc::now().to_rfc3339());
+        if let Err(e) = result {
             error!("Scanner error: {}", e);
         }
     });
 
     // Start API server (in current task, not spawned)
-    let api_task = start_api_server(db, args);
+    let api_task = start_api_server(db, args, runtime_scan_state);
 
     // Wait for either scanner to complete or API server
     tokio::select! {
@@ -213,7 +225,11 @@ async fn run_combined(args: &Args) -> Result<()> {
 }
 
 /// Start the API server
-async fn start_api_server(db: SqliteDB, args: &Args) -> Result<()> {
+async fn start_api_server(
+    db: SqliteDB,
+    args: &Args,
+    runtime_scan_state: service::RuntimeScanState,
+) -> Result<()> {
     use crate::service::ScanController;
     use actix_cors::Cors;
     use actix_files::Files;
@@ -226,6 +242,7 @@ async fn start_api_server(db: SqliteDB, args: &Args) -> Result<()> {
     // Create global scan controller singleton with async-aware mutex
     let scan_controller = Arc::new(tokio::sync::Mutex::new(ScanController::new(db)));
     let controller_data = web::Data::new(scan_controller);
+    let runtime_scan_data = web::Data::new(runtime_scan_state);
 
     // Get OpenAPI documentation
     let openapi = api::ApiDoc::openapi();
@@ -248,6 +265,7 @@ async fn start_api_server(db: SqliteDB, args: &Args) -> Result<()> {
             .wrap(cors)
             .app_data(db_data.clone())
             .app_data(controller_data.clone())
+            .app_data(runtime_scan_data.clone())
             .configure(api::init_routes);
 
         if swagger_ui_enabled {
@@ -618,6 +636,10 @@ async fn run_scanner_logic(
         // Enrichment runs continuously in the background while scanning. Keeping it
         // out of the round critical path prevents duplicate GeoIP/service probes and
         // lets the scanner move directly to its next round.
+
+        // Record round completion even when no ports were open and therefore no
+        // bitmap row exists for this round.
+        db.save_metadata("last_scan_time", &chrono::Utc::now().to_rfc3339())?;
 
         // Print statistics
         let (total_results, unique_open) = db.get_stats()?;

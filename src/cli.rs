@@ -36,7 +36,12 @@ fn parse_positive_u64(value: &str) -> Result<u64, String> {
 pub struct Args {
     /// Configuration file path (optional)
     /// Can be provided with --config flag.
-    #[arg(long, env = "SCAN_CONFIG", value_name = "FILE_PATH")]
+    #[arg(
+        long = "config",
+        visible_alias = "config-flag",
+        env = "SCAN_CONFIG",
+        value_name = "FILE_PATH"
+    )]
     pub config_flag: Option<PathBuf>,
 
     /// Configuration file path (optional, positional)
@@ -712,6 +717,12 @@ impl Args {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_config_flag_uses_documented_name() {
+        let args = Args::try_parse_from(["ip-scan", "--config", "scanner.toml"]).unwrap();
+        assert_eq!(args.config_flag, Some(PathBuf::from("scanner.toml")));
+    }
 
     #[test]
     fn test_rejects_zero_runtime_limits() {

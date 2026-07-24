@@ -173,6 +173,11 @@ impl SqliteDB {
         // the current bitmap round in memory without changing correctness.
         conn.pragma_update(None, "cache_size", -64 * 1024i64)?;
         conn.pragma_update(None, "temp_store", "MEMORY")?;
+        // Bound the reusable WAL allocation and checkpoint stale WAL files at
+        // startup. Automatic checkpoints keep normal writes incremental.
+        conn.pragma_update(None, "wal_autocheckpoint", 1000i64)?;
+        conn.pragma_update(None, "journal_size_limit", 64 * 1024 * 1024i64)?;
+        let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
 
         Ok(SqliteDB {
             conn: Arc::new(Mutex::new(conn)),
@@ -180,15 +185,19 @@ impl SqliteDB {
     }
 
     pub fn cleanup_old_rounds(&self, keep_rounds: i64) -> Result<u64> {
+        if keep_rounds <= 0 {
+            return Err(anyhow::anyhow!("keep_rounds must be greater than zero"));
+        }
+
         let conn = self.conn.lock().unwrap();
-        let min_round: Option<i64> = conn
-            .query_row("SELECT MIN(scan_round) FROM port_bitmaps", [], |row| {
+        let max_round: Option<i64> =
+            conn.query_row("SELECT MAX(scan_round) FROM port_bitmaps", [], |row| {
                 row.get(0)
-            })
-            .ok()
-            .flatten();
-        let deleted = if let Some(min) = min_round {
-            let cutoff = min + keep_rounds;
+            })?;
+        let deleted = if let Some(max_round) = max_round {
+            // Preserve the newest N rounds. Deriving the cutoff from MIN would
+            // repeatedly delete the rounds that were meant to be retained.
+            let cutoff = max_round.saturating_sub(keep_rounds - 1);
             conn.execute(
                 "DELETE FROM port_bitmaps WHERE scan_round < ?1",
                 params![cutoff],
@@ -196,9 +205,10 @@ impl SqliteDB {
         } else {
             0
         };
-        if deleted > 0 {
-            let _ = conn.execute("VACUUM", []);
-        }
+
+        // Do not VACUUM in the scan loop: it rewrites the whole database and
+        // can inflate or lock the WAL every few seconds. Space is reused by
+        // SQLite and explicit maintenance can VACUUM during a planned window.
         Ok(deleted as u64)
     }
 
@@ -741,17 +751,16 @@ impl SqliteDB {
 
     /// Get last scan timestamp
     pub fn get_last_scan_time(&self) -> Result<Option<String>> {
-        let conn = self.conn.lock().unwrap();
-
-        let result = conn.query_row("SELECT MAX(last_updated) FROM port_bitmaps", [], |row| {
-            row.get(0)
-        });
-
-        match result {
-            Ok(time) => Ok(Some(time)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(e.into()),
+        if let Some(completed_at) = self.get_metadata("last_scan_time")? {
+            return Ok(Some(completed_at));
         }
+
+        let conn = self.conn.lock().unwrap();
+        let result: Option<String> =
+            conn.query_row("SELECT MAX(last_updated) FROM port_bitmaps", [], |row| {
+                row.get(0)
+            })?;
+        Ok(result)
     }
 
     /// Get scan history grouped by scan round
@@ -1059,6 +1068,37 @@ mod tests {
         assert_eq!(summaries.len(), 1);
         assert_eq!(summaries[0].ip, "192.0.2.10");
         assert_eq!(summaries[0].services.len(), 1);
+    }
+
+    #[test]
+    fn cleanup_old_rounds_preserves_the_newest_rounds() {
+        let db = SqliteDB::new(":memory:").unwrap();
+        for round in 1..=4 {
+            db.set_port_status(&format!("192.0.2.{round}"), 80, true, round)
+                .unwrap();
+        }
+
+        assert_eq!(db.cleanup_old_rounds(2).unwrap(), 2);
+        let rounds = {
+            let conn = db.conn.lock().unwrap();
+            let mut stmt = conn
+                .prepare("SELECT scan_round FROM port_bitmaps ORDER BY scan_round")
+                .unwrap();
+            stmt.query_map([], |row| row.get::<_, i64>(0))
+                .unwrap()
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .unwrap()
+        };
+        assert_eq!(rounds, vec![3, 4]);
+        assert_eq!(db.cleanup_old_rounds(2).unwrap(), 0);
+        assert!(db.cleanup_old_rounds(0).is_err());
+        assert!(db.get_last_scan_time().unwrap().is_some());
+        db.save_metadata("last_scan_time", "2026-07-24T10:00:00Z")
+            .unwrap();
+        assert_eq!(
+            db.get_last_scan_time().unwrap().as_deref(),
+            Some("2026-07-24T10:00:00Z")
+        );
     }
 
     #[test]

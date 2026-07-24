@@ -99,6 +99,8 @@ curl http://127.0.0.1:9090/api/v1/services/192.168.1.10
 curl http://127.0.0.1:9090/api-docs/openapi.json
 ```
 
+`/api/v1/scan/status` 同时报告 CLI 与 API 发起的扫描；`source` 标识来源，`controllable` 表示能否通过 API 停止。
+
 ## 配置、部署与文档
 
 - 示例配置：[`config.toml`](config.toml)

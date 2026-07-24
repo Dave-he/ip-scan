@@ -27,7 +27,7 @@ ip-scan --dry-run --target 192.168.1.0/24 --ports 22,80,443
 - `--concurrency` 控制连接任务，`--max-rate` 控制速率上限；CLI 会在启动前拒绝 0 值并发、超时、缓冲区和速率配置。
 - `--pipeline-buffer`、`--result-buffer` 和 `--db-batch-size` 影响内存与吞吐。
 - GeoIP/WHOIS/DNS 使用独立 `--geo-concurrency`（默认 8），服务探测使用 `--probe-concurrency`；两者不要与扫描并发简单相加。
-- SQLite 使用 WAL；定期备份数据库，循环模式会清理过旧 bitmap 轮次。
+- SQLite 使用 WAL；定期备份数据库。循环模式保留最新两个 bitmap 轮次，旧轮次删除后由 SQLite 复用空间，不在扫描热路径执行全库 `VACUUM`。
 
 ## 监控
 
@@ -53,7 +53,7 @@ cargo audit --no-fetch --stale
 
 ## SQLite 性能
 
-数据库初始化时启用 WAL、NORMAL 同步级别、5 秒 busy timeout、64 MiB page cache 和内存临时表。busy timeout 用于平滑扫描器与 enrichment worker 的短时写入竞争；不要把它当成无限重试，长时间锁竞争仍应通过降低并发或拆分数据库实例处理。
+数据库初始化时启用 WAL、NORMAL 同步级别、5 秒 busy timeout、64 MiB page cache、64 MiB WAL 文件上限、自动 checkpoint 和内存临时表；启动时会截断已完成 checkpoint 的陈旧 WAL。busy timeout 用于平滑扫描器与 enrichment worker 的短时写入竞争；不要把它当成无限重试，长时间锁竞争仍应通过降低并发或拆分数据库实例处理。需要回收主数据库空闲页时，应在计划维护窗口停扫后执行 `VACUUM`，不得每轮执行。
 
 ## 服务探测退避
 

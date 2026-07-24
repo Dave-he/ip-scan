@@ -486,9 +486,17 @@ pub async fn get_top_ports(
 /// Start a new scan
 pub async fn start_scan(
     controller: web::Data<std::sync::Arc<tokio::sync::Mutex<crate::service::ScanController>>>,
+    runtime_scan_state: web::Data<crate::service::RuntimeScanState>,
     request: web::Json<StartScanRequest>,
 ) -> impl Responder {
     use crate::cli::Args;
+
+    if runtime_scan_state.is_cli_scan_running() {
+        return HttpResponse::Conflict().json(ErrorResponse {
+            error: "A CLI-managed scan is already running".to_string(),
+            code: Some("SCAN_ALREADY_RUNNING".to_string()),
+        });
+    }
 
     // Create a minimal base args for scan controller
     let base_args = Args {
@@ -561,13 +569,23 @@ pub async fn start_scan(
     responses(
         (status = 200, description = "Scan stopped successfully"),
         (status = 404, description = "No scan in progress", body = ErrorResponse),
+        (status = 409, description = "CLI-managed scan is not API-controllable", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     ),
     tag = "Scan Control"
 )]
 pub async fn stop_scan(
     controller: web::Data<std::sync::Arc<tokio::sync::Mutex<crate::service::ScanController>>>,
+    runtime_scan_state: web::Data<crate::service::RuntimeScanState>,
 ) -> impl Responder {
+    if runtime_scan_state.is_cli_scan_running() {
+        return HttpResponse::Conflict().json(ErrorResponse {
+            error: "The running scan is managed by the CLI and cannot be stopped via this endpoint"
+                .to_string(),
+            code: Some("SCAN_NOT_API_CONTROLLABLE".to_string()),
+        });
+    }
+
     // Get shared controller with async lock
     let controller_guard = controller.lock().await;
 
@@ -590,28 +608,43 @@ pub async fn stop_scan(
     get,
     path = "/api/v1/scan/status",
     responses(
-        (status = 200, description = "Successfully retrieved scan status"),
+        (status = 200, description = "Retrieved API/CLI scan status and controllability"),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     ),
     tag = "Scan Control"
 )]
 pub async fn get_scan_status(
     controller: web::Data<std::sync::Arc<tokio::sync::Mutex<crate::service::ScanController>>>,
+    runtime_scan_state: web::Data<crate::service::RuntimeScanState>,
     db: web::Data<SqliteDB>,
 ) -> impl Responder {
     // Get shared controller with async lock
     let controller_guard = controller.lock().await;
 
-    // Get controller status
+    // Merge API-controlled and CLI-controlled scanner state. In combined mode
+    // the long-running CLI scanner is intentionally not owned by ScanController.
     let controller_status = controller_guard.get_status();
-    let is_running = controller_guard.is_running();
+    let controller_running = controller_guard.is_running();
+    let cli_running = runtime_scan_state.is_cli_scan_running();
     let scan_id = controller_guard.get_scan_id();
+    let (effective_status, is_running, source, controllable) = if controller_running {
+        (controller_status, true, Some("api"), true)
+    } else if cli_running {
+        (ScanStatus::Running, true, Some("cli"), false)
+    } else {
+        (controller_status, false, None, false)
+    };
 
     // Get database metadata
-    let db_status = db
+    let stored_db_status = db
         .get_metadata("scan_status")
         .unwrap_or(Some("idle".to_string()))
         .unwrap_or("idle".to_string());
+    let db_status = if cli_running {
+        "running".to_string()
+    } else {
+        stored_db_status
+    };
     let current_round = db.get_current_round().unwrap_or(1);
     let last_scan_time = db.get_last_scan_time().unwrap_or(None);
 
@@ -620,8 +653,10 @@ pub async fn get_scan_status(
     let stop_time = db.get_metadata("last_scan_stop_time").ok().flatten();
 
     HttpResponse::Ok().json(json!({
-        "status": controller_status,
+        "status": effective_status,
         "is_running": is_running,
+        "source": source,
+        "controllable": controllable,
         "scan_id": scan_id,
         "db_status": db_status,
         "current_round": current_round,

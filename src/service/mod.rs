@@ -13,6 +13,6 @@ pub use optimized_scanner::{
     quick_scan, range_scan, OptimizedScanner, OptimizedScannerConfig, PortState,
 };
 pub use rate_limiter::RateLimiter;
-pub use scan_controller::ScanController;
+pub use scan_controller::{RuntimeScanState, ScanController};
 pub use service_prober::{reverse_dns_lookup, ServiceProber};
 pub use syn_scanner::SynScanner;

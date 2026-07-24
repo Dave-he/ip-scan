@@ -14,6 +14,28 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tracing::{error, info};
 
+/// Runtime state for a scanner started by the CLI rather than the API controller.
+#[derive(Debug, Clone, Default)]
+pub struct RuntimeScanState {
+    cli_scan_running: Arc<AtomicBool>,
+}
+
+impl RuntimeScanState {
+    pub fn with_cli_scan_running(running: bool) -> Self {
+        Self {
+            cli_scan_running: Arc::new(AtomicBool::new(running)),
+        }
+    }
+
+    pub fn is_cli_scan_running(&self) -> bool {
+        self.cli_scan_running.load(Ordering::SeqCst)
+    }
+
+    pub fn set_cli_scan_running(&self, running: bool) {
+        self.cli_scan_running.store(running, Ordering::SeqCst);
+    }
+}
+
 /// Scan controller for managing scan operations
 pub struct ScanController {
     db: SqliteDB,
@@ -321,6 +343,7 @@ impl ScanController {
 
         // Update round if scan completed successfully
         if scanner_result.is_ok() {
+            db.save_metadata("last_scan_time", &Utc::now().to_rfc3339())?;
             let _ = db.increment_round()?;
         }
 
@@ -332,6 +355,17 @@ impl ScanController {
 mod tests {
     use super::*;
     use tempfile::NamedTempFile;
+
+    #[test]
+    fn runtime_scan_state_tracks_cli_scanner() {
+        let state = RuntimeScanState::default();
+        assert!(!state.is_cli_scan_running());
+        state.set_cli_scan_running(true);
+        assert!(state.is_cli_scan_running());
+        let clone = state.clone();
+        clone.set_cli_scan_running(false);
+        assert!(!state.is_cli_scan_running());
+    }
 
     #[tokio::test]
     async fn test_scan_controller() {
