@@ -8,6 +8,7 @@ pub struct IpGeoInfo {
     pub city: Option<String>,
     pub isp: Option<String>,
     pub asn: Option<String>,
+    pub reverse_dns: Option<String>,
     pub source: String,
 }
 
@@ -20,6 +21,7 @@ impl IpGeoInfo {
             city: None,
             isp: None,
             asn: None,
+            reverse_dns: None,
             source,
         }
     }

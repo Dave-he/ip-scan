@@ -12,6 +12,14 @@ pub struct ServiceInfo {
     pub http_body_preview: Option<String>,
     pub tls_subject: Option<String>,
     pub tls_issuer: Option<String>,
+    pub tls_not_before: Option<String>,
+    pub tls_not_after: Option<String>,
+    pub tls_version: Option<String>,
+    pub service_version: Option<String>,
+    pub http_body_hash: Option<String>,
+    pub http_security_headers: Option<String>,
+    pub rtt_ms: Option<f64>,
+    pub os_guess: Option<String>,
     pub detected_at: String,
 }
 
@@ -28,6 +36,14 @@ impl ServiceInfo {
             http_body_preview: None,
             tls_subject: None,
             tls_issuer: None,
+            tls_not_before: None,
+            tls_not_after: None,
+            tls_version: None,
+            service_version: None,
+            http_body_hash: None,
+            http_security_headers: None,
+            rtt_ms: None,
+            os_guess: None,
             detected_at: chrono::Utc::now().to_rfc3339(),
         }
     }
@@ -68,6 +84,57 @@ impl ServiceInfo {
     pub fn is_probable_https_port(port: u16) -> bool {
         matches!(port, 443 | 8443)
     }
+
+    pub fn guess_os_from_ttl(ttl: u32) -> Option<&'static str> {
+        match ttl {
+            0..=32 => Some("Windows (Vista+)"),
+            33..=64 => Some("Linux/Unix/macOS"),
+            65..=128 => Some("Windows (older)"),
+            129..=255 => Some("UNIX (routing)"),
+            _ => None,
+        }
+    }
+
+    pub fn parse_version_from_banner(service_name: &str, banner: &str) -> Option<String> {
+        match service_name {
+            "ssh" => {
+                if let Some(line) = banner.lines().next() {
+                    if line.starts_with("SSH-") {
+                        if let Some(idx) = line.find(' ') {
+                            return Some(line[..idx].to_string());
+                        }
+                        return Some(line.to_string());
+                    }
+                }
+            }
+            "ftp" => {
+                if let Some(line) = banner.lines().next() {
+                    if line.starts_with("220 ") {
+                        let version_part = line.trim_start_matches("220 ");
+                        return Some(version_part.to_string());
+                    }
+                }
+            }
+            "smtp" => {
+                if let Some(line) = banner.lines().next() {
+                    if line.starts_with("220 ") || line.starts_with("220-") {
+                        return Some(
+                            line.trim_start_matches("220 ")
+                                .trim_start_matches("220-")
+                                .to_string(),
+                        );
+                    }
+                }
+            }
+            "http" | "https" | "http-alt" | "https-alt" => {
+                if !banner.is_empty() {
+                    return Some(banner.to_string());
+                }
+            }
+            _ => {}
+        }
+        None
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -76,9 +143,41 @@ pub struct IpServiceSummary {
     pub services: Vec<ServiceInfo>,
     pub ip_type: Option<String>,
     pub category: String,
+    pub risk_score: u8,
+    pub risk_reasons: Vec<String>,
 }
 
 impl IpServiceSummary {
+    pub fn assess_risk(services: &[ServiceInfo]) -> (u8, Vec<String>) {
+        let mut score = 0u8;
+        let mut reasons = Vec::new();
+        for service in services {
+            let (points, reason) = match service.service_name.as_str() {
+                "telnet" => (90, "Telnet 明文远程管理"),
+                "redis" | "mongodb" | "elasticsearch" => (75, "数据库/搜索服务暴露"),
+                "ftp" | "pop3" | "imap" | "smtp" => (40, "邮件或文件服务暴露"),
+                "rdp" | "vnc" => (60, "远程桌面服务暴露"),
+                "http" | "http-alt" | "https" | "https-alt" => (20, "Web 服务暴露"),
+                _ => (0, ""),
+            };
+            score = score.max(points);
+            if !reason.is_empty() && !reasons.iter().any(|r| r == reason) {
+                reasons.push(reason.to_string());
+            }
+            if service.tls_not_after.is_some() && service.tls_version.is_none() {
+                score = score.max(35);
+                reasons.push("TLS 证书信息不完整".to_string());
+            }
+            if let Some(headers) = &service.http_security_headers {
+                if headers.starts_with("0/") || headers.starts_with("1/") {
+                    score = score.max(30);
+                    reasons.push("Web 安全响应头缺失较多".to_string());
+                }
+            }
+        }
+        (score.min(100), reasons)
+    }
+
     pub fn categorize(services: &[ServiceInfo]) -> String {
         let service_names: Vec<&str> = services.iter().map(|s| s.service_name.as_str()).collect();
 
@@ -130,5 +229,19 @@ impl IpServiceSummary {
             return "ftp-server".to_string();
         }
         "server".to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{IpServiceSummary, ServiceInfo};
+
+    #[test]
+    fn risk_assessment_flags_dangerous_services() {
+        let mut service = ServiceInfo::new("192.0.2.1".to_string(), 23);
+        service.service_name = "telnet".to_string();
+        let (score, reasons) = IpServiceSummary::assess_risk(&[service]);
+        assert_eq!(score, 90);
+        assert!(reasons.iter().any(|r| r.contains("Telnet")));
     }
 }

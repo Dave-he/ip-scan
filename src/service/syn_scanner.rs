@@ -499,9 +499,12 @@ impl SynScanner {
         });
     }
 
-    pub fn send_syn(&self, dst_ip: Ipv4Addr, dst_port: u16) -> Result<()> {
+    pub async fn send_syn(&self, dst_ip: Ipv4Addr, dst_port: u16) -> Result<()> {
         let pkt = SynPacket { dst_ip, dst_port };
-        self.packet_tx.try_send(pkt).map_err(|e| anyhow!("{}", e))?;
+        self.packet_tx
+            .send(pkt)
+            .await
+            .map_err(|e| anyhow!("{}", e))?;
         self.metrics.increment_scanned();
         Ok(())
     }
@@ -518,7 +521,7 @@ impl SynScanner {
             if let IpAddr::V4(ipv4) = ip {
                 for port in &ports {
                     self.rate_limiter.acquire().await;
-                    if let Err(e) = self.send_syn(ipv4, *port) {
+                    if let Err(e) = self.send_syn(ipv4, *port).await {
                         debug!(ip = %ipv4, port = port, error = %e, "Failed to send SYN");
                         self.metrics.increment_errors();
                     }

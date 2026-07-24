@@ -383,7 +383,7 @@ mod tests {
             api_only: false,
             no_api: false,
             api_host: "127.0.0.1".to_string(),
-            api_port: 8080,
+            api_port: 9090,
             swagger_ui: false,
             target: None,
             preset: None,

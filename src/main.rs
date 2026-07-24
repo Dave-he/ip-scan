@@ -248,6 +248,70 @@ async fn start_api_server(db: SqliteDB, args: &Args) -> Result<()> {
 }
 
 /// Scanner logic (extracted from original main function)
+async fn enrich_discovered_assets(
+    db: &SqliteDB,
+    geo: Option<&GeoService>,
+    args: &Args,
+) -> Result<()> {
+    let mut jobs = tokio::task::JoinSet::new();
+    if let Some(geo) = geo {
+        let ips = db.get_ips_missing_geo(256)?;
+        let geo = geo.clone();
+        let db = db.clone();
+        jobs.spawn(async move {
+            let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(8));
+            let mut tasks = tokio::task::JoinSet::new();
+            for ip in ips {
+                let permit = semaphore.clone().acquire_owned().await.unwrap();
+                let geo = geo.clone();
+                let db = db.clone();
+                tasks.spawn(async move {
+                    let _permit = permit;
+                    if let Ok(Ok(info)) =
+                        tokio::time::timeout(tokio::time::Duration::from_secs(6), geo.lookup(&ip))
+                            .await
+                    {
+                        db.save_ip_geo_info(&info)?;
+                    }
+                    Ok::<(), anyhow::Error>(())
+                });
+            }
+            while let Some(result) = tasks.join_next().await {
+                result??;
+            }
+            Ok::<(), anyhow::Error>(())
+        });
+    }
+    if args.probe_service {
+        let ip_ports = db.get_ips_missing_service_probe(128)?;
+        let db = db.clone();
+        let prober = service::ServiceProber::new(args.probe_timeout, args.probe_concurrency);
+        jobs.spawn(async move {
+            let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(16));
+            let mut tasks = tokio::task::JoinSet::new();
+            for (ip, ports) in ip_ports {
+                let permit = semaphore.clone().acquire_owned().await.unwrap();
+                let prober = prober.clone();
+                let db = db.clone();
+                tasks.spawn(async move {
+                    let _permit = permit;
+                    let services = prober.probe_ip(&ip, &ports).await;
+                    db.save_service_info_batch(&services)?;
+                    Ok::<(), anyhow::Error>(())
+                });
+            }
+            while let Some(result) = tasks.join_next().await {
+                result??;
+            }
+            Ok::<(), anyhow::Error>(())
+        });
+    }
+    while let Some(result) = jobs.join_next().await {
+        result??;
+    }
+    Ok(())
+}
+
 async fn run_scanner_logic(
     db: SqliteDB,
     args: &Args,
@@ -255,7 +319,7 @@ async fn run_scanner_logic(
 ) -> Result<()> {
     use model::{parse_port_range, IpRange};
     use service::{ConScanner, SynScanner};
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Arc;
 
     // Setup shutdown flag
@@ -301,6 +365,27 @@ async fn run_scanner_logic(
     // Parse port range
     let ports = parse_port_range(&args.ports).map_err(|e| anyhow::anyhow!(e))?;
     info!("Scanning {} ports: {:?}", ports.len(), ports);
+
+    // Enrichment consumes newly persisted open ports during the scan.
+    let enrichment_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let enrichment_handle = if geo_service.is_some() || args.probe_service {
+        let db_worker = db.clone();
+        let geo_worker = geo_service.clone();
+        let args_worker = args.clone();
+        let stop_worker = enrichment_stop.clone();
+        Some(tokio::spawn(async move {
+            while !stop_worker.load(std::sync::atomic::Ordering::Relaxed) {
+                if let Err(e) =
+                    enrich_discovered_assets(&db_worker, geo_worker.as_ref(), &args_worker).await
+                {
+                    error!("Background enrichment failed: {}", e);
+                }
+                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+            }
+        }))
+    } else {
+        None
+    };
 
     loop {
         // Check shutdown flag
@@ -486,21 +571,43 @@ async fn run_scanner_logic(
                 Ok(ips_to_enrich) => {
                     if !ips_to_enrich.is_empty() {
                         info!("Found {} IPs missing geolocation info", ips_to_enrich.len());
-                        let mut enriched_count = 0;
-
+                        let enriched = Arc::new(AtomicUsize::new(0));
+                        let geo_arc = Arc::new(geo.clone());
+                        let db_arc = Arc::new(db.clone());
+                        let sem = Arc::new(tokio::sync::Semaphore::new(5));
+                        let mut tasks = tokio::task::JoinSet::new();
                         for ip in ips_to_enrich {
-                            match geo.lookup(&ip).await {
-                                Ok(info) => {
-                                    if let Err(e) = db.save_ip_geo_info(&info) {
-                                        error!("Failed to save geo info for {}: {}", ip, e);
-                                    } else {
-                                        enriched_count += 1;
+                            let geo_c = geo_arc.clone();
+                            let db_c = db_arc.clone();
+                            let sem_c = sem.clone();
+                            let enriched_c = enriched.clone();
+                            tasks.spawn(async move {
+                                let _permit = sem_c.acquire().await.unwrap();
+                                match tokio::time::timeout(
+                                    std::time::Duration::from_secs(6),
+                                    geo_c.lookup(&ip),
+                                )
+                                .await
+                                {
+                                    Ok(Ok(info)) => {
+                                        if let Err(e) = db_c.save_ip_geo_info(&info) {
+                                            error!("Failed to save geo info for {}: {}", ip, e);
+                                        } else {
+                                            enriched_c.fetch_add(1, Ordering::Relaxed);
+                                        }
                                     }
+                                    Ok(Err(e)) => {
+                                        error!("Failed to lookup geo info for {}: {}", ip, e)
+                                    }
+                                    Err(_) => error!("Geo lookup timed out for {}", ip),
                                 }
-                                Err(e) => error!("Failed to lookup geo info for {}: {}", ip, e),
-                            }
+                            });
                         }
-                        info!("Enriched {} IPs with geolocation data", enriched_count);
+                        while tasks.join_next().await.is_some() {}
+                        info!(
+                            "Enriched {} IPs with geolocation data",
+                            enriched.load(Ordering::Relaxed)
+                        );
                     }
                 }
                 Err(e) => error!("Failed to fetch IPs for enrichment: {}", e),
@@ -557,9 +664,21 @@ async fn run_scanner_logic(
             break;
         }
 
+        if let Ok(deleted) = db.cleanup_old_rounds(2) {
+            if deleted > 0 {
+                info!("Cleaned up {} old bitmap rows", deleted);
+            }
+        }
+
         current_round = db.increment_round()?;
         info!("Starting round {} after 5s delay...", current_round);
         tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+    }
+
+    enrichment_stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    if let Some(handle) = enrichment_handle {
+        handle.abort();
+        let _ = handle.await;
     }
 
     Ok(())

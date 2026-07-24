@@ -66,6 +66,10 @@ pub struct ScanResult {
     /// City (optional)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub city: Option<String>,
+
+    /// Reverse DNS hostname (optional)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reverse_dns: Option<String>,
 }
 
 /// Paginated response for scan results
@@ -290,6 +294,22 @@ pub struct ServiceInfoResponse {
     pub tls_subject: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tls_issuer: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls_not_before: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls_not_after: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http_body_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http_security_headers: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rtt_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub os_guess: Option<String>,
     pub detected_at: String,
 }
 
@@ -300,6 +320,8 @@ pub struct IpServiceSummaryResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ip_type: Option<String>,
     pub category: String,
+    pub risk_score: u8,
+    pub risk_reasons: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]

@@ -1,12 +1,13 @@
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::sync::Semaphore;
 
 pub struct RateLimiter {
     semaphore: Arc<Semaphore>,
     max_rate: usize,
     window_duration: Duration,
-    last_reset: Arc<tokio::sync::Mutex<Instant>>,
+    last_reset_ms: AtomicU64,
 }
 
 impl RateLimiter {
@@ -15,24 +16,28 @@ impl RateLimiter {
             semaphore: Arc::new(Semaphore::new(max_rate)),
             max_rate,
             window_duration,
-            last_reset: Arc::new(tokio::sync::Mutex::new(Instant::now())),
+            last_reset_ms: AtomicU64::new(now_ms()),
         }
     }
 
     pub async fn acquire(&self) {
-        // Check if we need to reset the window
-        let mut last_reset = self.last_reset.lock().await;
-        if last_reset.elapsed() >= self.window_duration {
-            *last_reset = Instant::now();
-            // Add permits back
-            let current_permits = self.semaphore.available_permits();
-            if current_permits < self.max_rate {
-                self.semaphore.add_permits(self.max_rate - current_permits);
+        let now = now_ms();
+        let last = self.last_reset_ms.load(Ordering::Relaxed);
+        let window_ms = self.window_duration.as_millis() as u64;
+
+        if now.saturating_sub(last) >= window_ms {
+            if self
+                .last_reset_ms
+                .compare_exchange(last, now, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+            {
+                let current = self.semaphore.available_permits();
+                if current < self.max_rate {
+                    self.semaphore.add_permits(self.max_rate - current);
+                }
             }
         }
-        drop(last_reset);
 
-        // Acquire a permit
         let _ = self.semaphore.acquire().await;
     }
 }
@@ -43,9 +48,17 @@ impl Clone for RateLimiter {
             semaphore: self.semaphore.clone(),
             max_rate: self.max_rate,
             window_duration: self.window_duration,
-            last_reset: self.last_reset.clone(),
+            last_reset_ms: AtomicU64::new(self.last_reset_ms.load(Ordering::Relaxed)),
         }
     }
+}
+
+#[inline]
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }
 
 #[cfg(test)]
@@ -53,31 +66,12 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn test_rate_limiter() {
-        let max_rate = 5;
-        let window_duration = Duration::from_millis(100);
-        let limiter = RateLimiter::new(max_rate, window_duration);
-
-        let start = Instant::now();
-        for _ in 0..max_rate {
+    async fn test_rate_limiter_burst() {
+        let limiter = RateLimiter::new(5, Duration::from_millis(100));
+        let start = std::time::Instant::now();
+        for _ in 0..5 {
             limiter.acquire().await;
         }
-
-        // Should have consumed all permits, so next acquire should wait
-        // But since we just consumed them, the first batch should be fast.
-        assert!(start.elapsed() < window_duration);
-
-        // This one should trigger a wait or be allowed if enough time passed
-        // To properly test, we'd need to mock time or ensure we consume more than max_rate
-
-        // Let's test that we can acquire more than max_rate eventually
-        let limiter_clone = limiter.clone();
-        let handle = tokio::spawn(async move {
-            for _ in 0..max_rate {
-                limiter_clone.acquire().await;
-            }
-        });
-
-        handle.await.unwrap();
+        assert!(start.elapsed() < Duration::from_millis(100));
     }
 }

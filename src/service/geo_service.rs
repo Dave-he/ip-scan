@@ -35,6 +35,15 @@ impl GeoService {
     }
 
     pub async fn lookup(&self, ip: &str) -> Result<IpGeoInfo> {
+        let mut info = self.lookup_geo_only(ip).await?;
+
+        let reverse = crate::service::reverse_dns_lookup(ip).await;
+        info.reverse_dns = reverse;
+
+        Ok(info)
+    }
+
+    async fn lookup_geo_only(&self, ip: &str) -> Result<IpGeoInfo> {
         if let Some(reader) = &self.reader {
             if let Ok(addr) = ip.parse::<IpAddr>() {
                 let lookup_result = reader.lookup(addr);
@@ -106,7 +115,12 @@ impl GeoService {
 
     async fn fetch_from_api(ip: &str) -> Result<IpGeoInfo> {
         let url = format!("http://ip-api.com/json/{}", ip);
-        let resp = reqwest::get(&url)
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()?;
+        let resp = client
+            .get(&url)
+            .send()
             .await
             .context("Failed to call IP API")?
             .json::<Value>()

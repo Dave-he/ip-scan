@@ -38,8 +38,8 @@ pub struct Args {
     #[arg(short = 't', long, env = "SCAN_TIMEOUT", default_value = "500")]
     pub timeout: u64,
 
-    /// Number of concurrent connections (defaults to 100)
-    #[arg(short = 'c', long, env = "SCAN_CONCURRENCY", default_value = "100")]
+    /// Number of concurrent connections (I/O-bound: set high)
+    #[arg(short = 'c', long, env = "SCAN_CONCURRENCY", default_value = "500")]
     pub concurrency: usize,
 
     /// Database file path
@@ -83,8 +83,8 @@ pub struct Args {
     #[arg(long, env = "SCAN_API", action = clap::ArgAction::SetTrue)]
     pub api: bool,
 
-    /// API server port (default: 8080)
-    #[arg(long, env = "SCAN_API_PORT", default_value = "8080")]
+    /// API server port (default: 9090)
+    #[arg(long, env = "SCAN_API_PORT", default_value = "9090")]
     pub api_port: u16,
 
     /// API server bind address (default: 0.0.0.0)
@@ -326,7 +326,7 @@ fn default_timeout() -> u64 {
 }
 
 fn default_concurrency() -> usize {
-    100
+    1000
 }
 
 fn default_database() -> String {
@@ -350,7 +350,7 @@ fn default_skip_private() -> bool {
 }
 
 fn default_max_rate() -> u64 {
-    100000
+    200000
 }
 
 fn default_window_duration() -> u64 {
@@ -378,7 +378,7 @@ fn default_api_host() -> String {
 }
 
 fn default_api_port() -> u16 {
-    8080
+    9090
 }
 
 fn default_api_enabled() -> bool {
@@ -554,6 +554,21 @@ impl Args {
         }
 
         self.apply_preset();
+
+        if let Some(ref target) = self.target {
+            if let Ok(range) = crate::model::IpRange::parse_target(target) {
+                self.start_ip = Some(range.start.to_string());
+                self.end_ip = Some(range.end.to_string());
+                match range.start {
+                    std::net::IpAddr::V4(_) => {
+                        self.ipv4 = true;
+                    }
+                    std::net::IpAddr::V6(_) => {
+                        self.ipv6 = true;
+                    }
+                }
+            }
+        }
 
         // Validate configuration
         self.validate()?;

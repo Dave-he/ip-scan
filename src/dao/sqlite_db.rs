@@ -88,6 +88,7 @@ impl SqliteDB {
                 city TEXT,
                 isp TEXT,
                 asn TEXT,
+                reverse_dns TEXT,
                 source TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )",
@@ -108,6 +109,14 @@ impl SqliteDB {
                 http_body_preview TEXT,
                 tls_subject TEXT,
                 tls_issuer TEXT,
+                tls_not_before TEXT,
+                tls_not_after TEXT,
+                tls_version TEXT,
+                service_version TEXT,
+                http_body_hash TEXT,
+                http_security_headers TEXT,
+                rtt_ms REAL,
+                os_guess TEXT,
                 detected_at TEXT NOT NULL,
                 UNIQUE(ip_address, port)
             )",
@@ -124,6 +133,22 @@ impl SqliteDB {
             [],
         )?;
 
+        // Migrations for existing databases
+        let migrations = [
+            "ALTER TABLE ip_details ADD COLUMN reverse_dns TEXT",
+            "ALTER TABLE service_info ADD COLUMN tls_not_before TEXT",
+            "ALTER TABLE service_info ADD COLUMN tls_not_after TEXT",
+            "ALTER TABLE service_info ADD COLUMN tls_version TEXT",
+            "ALTER TABLE service_info ADD COLUMN service_version TEXT",
+            "ALTER TABLE service_info ADD COLUMN http_body_hash TEXT",
+            "ALTER TABLE service_info ADD COLUMN http_security_headers TEXT",
+            "ALTER TABLE service_info ADD COLUMN rtt_ms REAL",
+            "ALTER TABLE service_info ADD COLUMN os_guess TEXT",
+        ];
+        for m in &migrations {
+            let _ = conn.execute(m, []);
+        }
+
         // Optimization: Set WAL mode for better concurrency
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
@@ -133,15 +158,38 @@ impl SqliteDB {
         })
     }
 
+    pub fn cleanup_old_rounds(&self, keep_rounds: i64) -> Result<u64> {
+        let conn = self.conn.lock().unwrap();
+        let min_round: Option<i64> = conn
+            .query_row("SELECT MIN(scan_round) FROM port_bitmaps", [], |row| {
+                row.get(0)
+            })
+            .ok()
+            .flatten();
+        let deleted = if let Some(min) = min_round {
+            let cutoff = min + keep_rounds;
+            conn.execute(
+                "DELETE FROM port_bitmaps WHERE scan_round < ?1",
+                params![cutoff],
+            )?
+        } else {
+            0
+        };
+        if deleted > 0 {
+            let _ = conn.execute("VACUUM", []);
+        }
+        Ok(deleted as u64)
+    }
+
     pub fn save_ip_geo_info(&self, info: &IpGeoInfo) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         let timestamp = Utc::now().to_rfc3339();
 
         conn.execute(
-            "INSERT INTO ip_details (ip_address, country, region, city, isp, asn, source, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "INSERT INTO ip_details (ip_address, country, region, city, isp, asn, reverse_dns, source, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
              ON CONFLICT(ip_address)
-             DO UPDATE SET country = ?2, region = ?3, city = ?4, isp = ?5, asn = ?6, source = ?7, updated_at = ?8",
+             DO UPDATE SET country = ?2, region = ?3, city = ?4, isp = ?5, asn = ?6, reverse_dns = ?7, source = ?8, updated_at = ?9",
             params![
                 info.ip,
                 info.country,
@@ -149,6 +197,7 @@ impl SqliteDB {
                 info.city,
                 info.isp,
                 info.asn,
+                info.reverse_dns,
                 info.source,
                 timestamp
             ],
@@ -162,7 +211,7 @@ impl SqliteDB {
         let conn = self.conn.lock().unwrap();
 
         let result = conn.query_row(
-            "SELECT ip_address, country, region, city, isp, asn, source FROM ip_details WHERE ip_address = ?1",
+            "SELECT ip_address, country, region, city, isp, asn, reverse_dns, source FROM ip_details WHERE ip_address = ?1",
             [ip],
             |row| {
                 Ok(IpGeoInfo {
@@ -172,7 +221,8 @@ impl SqliteDB {
                     city: row.get(3)?,
                     isp: row.get(4)?,
                     asn: row.get(5)?,
-                    source: row.get(6)?,
+                    reverse_dns: row.get(6)?,
+                    source: row.get(7)?,
                 })
             },
         ).optional()?;
@@ -495,11 +545,11 @@ impl SqliteDB {
         let offset = (page - 1) * page_size;
         let query = format!(
             "SELECT o.ip_address, o.ip_type, o.port, o.scan_round, o.first_seen, o.last_seen,
-                    i.country, i.city
+                    i.country, i.city, i.reverse_dns
              FROM open_ports_detail o
              LEFT JOIN ip_details i ON o.ip_address = i.ip_address
-             {} 
-             ORDER BY o.last_seen DESC, o.ip_address, o.port 
+             {}
+             ORDER BY o.last_seen DESC, o.ip_address, o.port
              LIMIT ? OFFSET ?",
             where_clause
         );
@@ -528,6 +578,7 @@ impl SqliteDB {
                         last_seen: row.get(5)?,
                         country: row.get(6)?,
                         city: row.get(7)?,
+                        reverse_dns: row.get(8)?,
                     })
                 },
             )?
@@ -542,7 +593,7 @@ impl SqliteDB {
 
         let mut stmt = conn.prepare(
             "SELECT o.ip_address, o.ip_type, o.port, o.scan_round, o.first_seen, o.last_seen,
-                    i.country, i.city
+                    i.country, i.city, i.reverse_dns
              FROM open_ports_detail o
              LEFT JOIN ip_details i ON o.ip_address = i.ip_address
              WHERE o.ip_address = ? 
@@ -560,6 +611,7 @@ impl SqliteDB {
                     last_seen: row.get(5)?,
                     country: row.get(6)?,
                     city: row.get(7)?,
+                    reverse_dns: row.get(8)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -573,7 +625,7 @@ impl SqliteDB {
 
         let mut stmt = conn.prepare(
             "SELECT o.ip_address, o.ip_type, o.port, o.scan_round, o.first_seen, o.last_seen,
-                    i.country, i.city
+                    i.country, i.city, i.reverse_dns
              FROM open_ports_detail o
              LEFT JOIN ip_details i ON o.ip_address = i.ip_address
              WHERE o.port = ? 
@@ -591,6 +643,7 @@ impl SqliteDB {
                     last_seen: row.get(5)?,
                     country: row.get(6)?,
                     city: row.get(7)?,
+                    reverse_dns: row.get(8)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -604,7 +657,7 @@ impl SqliteDB {
 
         let mut stmt = conn.prepare(
             "SELECT o.ip_address, o.ip_type, o.port, o.scan_round, o.first_seen, o.last_seen,
-                    i.country, i.city
+                    i.country, i.city, i.reverse_dns
              FROM open_ports_detail o
              LEFT JOIN ip_details i ON o.ip_address = i.ip_address
              WHERE o.scan_round = ? 
@@ -622,6 +675,7 @@ impl SqliteDB {
                     last_seen: row.get(5)?,
                     country: row.get(6)?,
                     city: row.get(7)?,
+                    reverse_dns: row.get(8)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -711,14 +765,16 @@ impl SqliteDB {
     pub fn save_service_info(&self, info: &ServiceInfo) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO service_info (ip_address, port, service_name, protocol, banner, http_title, http_server, http_body_preview, tls_subject, tls_issuer, detected_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            "INSERT INTO service_info (ip_address, port, service_name, protocol, banner, http_title, http_server, http_body_preview, tls_subject, tls_issuer, tls_not_before, tls_not_after, tls_version, service_version, http_body_hash, http_security_headers, rtt_ms, os_guess, detected_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
              ON CONFLICT(ip_address, port)
-             DO UPDATE SET service_name=?3, protocol=?4, banner=?5, http_title=?6, http_server=?7, http_body_preview=?8, tls_subject=?9, tls_issuer=?10, detected_at=?11",
+             DO UPDATE SET service_name=?3, protocol=?4, banner=?5, http_title=?6, http_server=?7, http_body_preview=?8, tls_subject=?9, tls_issuer=?10, tls_not_before=?11, tls_not_after=?12, tls_version=?13, service_version=?14, http_body_hash=?15, http_security_headers=?16, rtt_ms=?17, os_guess=?18, detected_at=?19",
             params![
                 info.ip, info.port, info.service_name, info.protocol,
                 info.banner, info.http_title, info.http_server,
                 info.http_body_preview, info.tls_subject, info.tls_issuer,
+                info.tls_not_before, info.tls_not_after, info.tls_version,
+                info.service_version, info.http_body_hash, info.http_security_headers, info.rtt_ms, info.os_guess,
                 info.detected_at,
             ],
         )?;
@@ -733,10 +789,7 @@ impl SqliteDB {
         let tx = conn.transaction()?;
         {
             let mut stmt = tx.prepare(
-                "INSERT INTO service_info (ip_address, port, service_name, protocol, banner, http_title, http_server, http_body_preview, tls_subject, tls_issuer, detected_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
-                 ON CONFLICT(ip_address, port)
-                 DO UPDATE SET service_name=?3, protocol=?4, banner=?5, http_title=?6, http_server=?7, http_body_preview=?8, tls_subject=?9, tls_issuer=?10, detected_at=?11"
+                "INSERT INTO service_info (ip_address, port, service_name, protocol, banner, http_title, http_server, http_body_preview, tls_subject, tls_issuer, tls_not_before, tls_not_after, tls_version, service_version, http_body_hash, http_security_headers, rtt_ms, os_guess, detected_at)\n                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)\n                 ON CONFLICT(ip_address, port)\n                 DO UPDATE SET service_name=?3, protocol=?4, banner=?5, http_title=?6, http_server=?7, http_body_preview=?8, tls_subject=?9, tls_issuer=?10, tls_not_before=?11, tls_not_after=?12, tls_version=?13, service_version=?14, http_body_hash=?15, http_security_headers=?16, rtt_ms=?17, os_guess=?18, detected_at=?19"
             )?;
             for info in infos {
                 stmt.execute(params![
@@ -750,6 +803,14 @@ impl SqliteDB {
                     info.http_body_preview,
                     info.tls_subject,
                     info.tls_issuer,
+                    info.tls_not_before,
+                    info.tls_not_after,
+                    info.tls_version,
+                    info.service_version,
+                    info.http_body_hash,
+                    info.http_security_headers,
+                    info.rtt_ms,
+                    info.os_guess,
                     info.detected_at,
                 ])?;
             }
@@ -761,7 +822,7 @@ impl SqliteDB {
     pub fn get_service_info_by_ip(&self, ip: &str) -> Result<Vec<ServiceInfo>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT ip_address, port, service_name, protocol, banner, http_title, http_server, http_body_preview, tls_subject, tls_issuer, detected_at
+            "SELECT ip_address, port, service_name, protocol, banner, http_title, http_server, http_body_preview, tls_subject, tls_issuer, tls_not_before, tls_not_after, tls_version, service_version, http_body_hash, http_security_headers, rtt_ms, os_guess, detected_at
              FROM service_info WHERE ip_address = ?1 ORDER BY port",
         )?;
         let results = stmt
@@ -777,7 +838,15 @@ impl SqliteDB {
                     http_body_preview: row.get(7)?,
                     tls_subject: row.get(8)?,
                     tls_issuer: row.get(9)?,
-                    detected_at: row.get(10)?,
+                    tls_not_before: row.get(10)?,
+                    tls_not_after: row.get(11)?,
+                    tls_version: row.get(12)?,
+                    service_version: row.get(13)?,
+                    http_body_hash: row.get(14)?,
+                    http_security_headers: row.get(15)?,
+                    rtt_ms: row.get(16)?,
+                    os_guess: row.get(17)?,
+                    detected_at: row.get(18)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -824,11 +893,14 @@ impl SqliteDB {
         for ip in ips {
             let services = self.get_service_info_by_ip(&ip)?;
             let category = IpServiceSummary::categorize(&services);
+            let (risk_score, risk_reasons) = IpServiceSummary::assess_risk(&services);
             summaries.push(IpServiceSummary {
                 ip: ip.clone(),
                 services,
                 ip_type: None,
                 category,
+                risk_score,
+                risk_reasons,
             });
         }
         Ok(summaries)
@@ -856,6 +928,7 @@ pub struct ScanResultDetail {
     pub last_seen: String,
     pub country: Option<String>,
     pub city: Option<String>,
+    pub reverse_dns: Option<String>,
 }
 
 /// Scan history record

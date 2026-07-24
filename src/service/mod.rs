@@ -14,5 +14,5 @@ pub use optimized_scanner::{
 };
 pub use rate_limiter::RateLimiter;
 pub use scan_controller::ScanController;
-pub use service_prober::ServiceProber;
+pub use service_prober::{reverse_dns_lookup, ServiceProber};
 pub use syn_scanner::SynScanner;

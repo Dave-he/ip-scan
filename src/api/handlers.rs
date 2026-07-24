@@ -56,6 +56,7 @@ pub async fn get_results(
                     last_seen: r.last_seen,
                     country: r.country,
                     city: r.city,
+                    reverse_dns: r.reverse_dns,
                 })
                 .collect();
 
@@ -111,6 +112,7 @@ pub async fn get_results_by_ip(db: web::Data<SqliteDB>, ip: web::Path<String>) -
                         last_seen: r.last_seen,
                         country: r.country,
                         city: r.city,
+                        reverse_dns: r.reverse_dns,
                     })
                     .collect();
 
@@ -161,6 +163,7 @@ pub async fn get_results_by_port(db: web::Data<SqliteDB>, port: web::Path<u16>) 
                         last_seen: r.last_seen,
                         country: r.country,
                         city: r.city,
+                        reverse_dns: r.reverse_dns,
                     })
                     .collect();
 
@@ -214,6 +217,7 @@ pub async fn get_results_by_round(
                         last_seen: r.last_seen,
                         country: r.country,
                         city: r.city,
+                        reverse_dns: r.reverse_dns,
                     })
                     .collect();
 
@@ -377,7 +381,7 @@ pub async fn start_scan(
         api_only: false,
         no_api: false,
         api_host: "127.0.0.1".to_string(),
-        api_port: 8080,
+        api_port: 9090,
         swagger_ui: false,
         target: None,
         preset: None,
@@ -661,6 +665,7 @@ pub async fn export_json(
                     last_seen: r.last_seen,
                     country: r.country,
                     city: r.city,
+                    reverse_dns: r.reverse_dns,
                 })
                 .collect();
 
@@ -755,6 +760,14 @@ fn service_info_to_response(info: &ServiceInfo) -> ServiceInfoResponse {
         http_body_preview: info.http_body_preview.clone(),
         tls_subject: info.tls_subject.clone(),
         tls_issuer: info.tls_issuer.clone(),
+        tls_not_before: info.tls_not_before.clone(),
+        tls_not_after: info.tls_not_after.clone(),
+        tls_version: info.tls_version.clone(),
+        service_version: info.service_version.clone(),
+        http_body_hash: info.http_body_hash.clone(),
+        http_security_headers: info.http_security_headers.clone(),
+        rtt_ms: info.rtt_ms,
+        os_guess: info.os_guess.clone(),
         detected_at: info.detected_at.clone(),
     }
 }
@@ -772,6 +785,8 @@ pub async fn get_service_info_by_ip(
                 })
             } else {
                 let category = crate::model::IpServiceSummary::categorize(&services);
+                let (risk_score, risk_reasons) =
+                    crate::model::IpServiceSummary::assess_risk(&services);
                 let resp_services: Vec<ServiceInfoResponse> =
                     services.iter().map(service_info_to_response).collect();
                 HttpResponse::Ok().json(IpServiceSummaryResponse {
@@ -779,6 +794,8 @@ pub async fn get_service_info_by_ip(
                     services: resp_services,
                     ip_type: None,
                     category,
+                    risk_score,
+                    risk_reasons,
                 })
             }
         }
@@ -810,11 +827,17 @@ pub async fn get_service_summaries(
             let total = db.count_ips_with_service_info().unwrap_or(0);
             let resp_summaries: Vec<IpServiceSummaryResponse> = summaries
                 .into_iter()
-                .map(|s| IpServiceSummaryResponse {
-                    ip: s.ip,
-                    services: s.services.iter().map(service_info_to_response).collect(),
-                    ip_type: s.ip_type,
-                    category: s.category,
+                .map(|s| {
+                    let (risk_score, risk_reasons) =
+                        crate::model::IpServiceSummary::assess_risk(&s.services);
+                    IpServiceSummaryResponse {
+                        ip: s.ip,
+                        services: s.services.iter().map(service_info_to_response).collect(),
+                        ip_type: s.ip_type,
+                        category: s.category,
+                        risk_score,
+                        risk_reasons,
+                    }
                 })
                 .collect();
             HttpResponse::Ok().json(ServiceSummaryListResponse {
