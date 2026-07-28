@@ -1,0 +1,23 @@
+# Benchmark config for ip-scan — disables private-network skip so
+# 127.0.0.0/24 is actually scanned. All other knobs match bench/run.sh
+# defaults and may be overridden by CLI flags.
+
+[scan]
+skip_private = false
+loop_mode = false
+only_store_open = true
+ipv4 = true
+ipv6 = false
+max_rate = 1000000
+concurrency = 4096
+timeout = 300
+rate_window_secs = 1
+pipeline_buffer = 65536
+result_buffer = 100000
+db_batch_size = 5000
+flush_interval_ms = 500
+api = false
+no_api = true
+
+[api]
+enabled = false

@@ -29,17 +29,10 @@ fn parse_positive_u64(value: &str) -> Result<u64, String> {
 }
 
 #[derive(Parser, Debug, Clone)]
-#[command(
-    name = "ip-scan",
-    author = "IP Scanner",
-    version = "0.1.0",
-    about = "High-performance IPv4/IPv6 port scanner with service/TLS enrichment.",
-    long_about = "ip-scan discovers open TCP ports on IPv4/IPv6 ranges and enriches each \
-                  open port with GeoIP, Banner, HTTP/TLS fingerprints, RTT, OS guess and a \
-                  lightweight exposure risk score. Only scan assets you own or are explicitly \
-                  authorized to test. See docs/SECURITY_KNOWLEDGE.md for per-port security \
-                  context, docs/OPERATIONS.md for safe operation guidance."
-)]
+#[command(name = "ip-scan")]
+#[command(author = "IP Scanner")]
+#[command(version = "0.1.0")]
+#[command(about = "High-performance IPv4/IPv6 port scanner", long_about = None)]
 pub struct Args {
     /// Configuration file path (optional)
     /// Can be provided with --config flag.
@@ -63,10 +56,7 @@ pub struct Args {
     #[arg(short = 'e', long, env = "SCAN_END_IP")]
     pub end_ip: Option<String>,
 
-    /// Port range (e.g., "80", "1-1000", "22,80,443"). The default set covers
-    /// the most common cleartext / sensitive services (FTP, Telnet, SMB,
-    /// RDP, MySQL, PostgreSQL, Redis, Elasticsearch, MongoDB, ...). See
-    /// docs/SECURITY_KNOWLEDGE.md for per-port security context.
+    /// Port range (e.g., "80", "1-1000", "22,80,443")
     #[arg(
         short = 'p',
         long,
@@ -79,8 +69,7 @@ pub struct Args {
     #[arg(short = 't', long, env = "SCAN_TIMEOUT", default_value = "500", value_parser = parse_positive_u64)]
     pub timeout: u64,
 
-    /// Number of concurrent connections (I/O-bound: set high). High values
-    /// increase packet rate and may trip IDS/WAF on the target side.
+    /// Number of concurrent connections (I/O-bound: set high)
     #[arg(short = 'c', long, env = "SCAN_CONCURRENCY", default_value = "500", value_parser = parse_positive_usize)]
     pub concurrency: usize,
 
@@ -94,8 +83,6 @@ pub struct Args {
     pub database: String,
 
     /// Print the resolved scan plan and exit without opening sockets or a database.
-    /// Use this for CI configuration checks, container readiness probes, and to
-    /// confirm the scan plan before running against production targets.
     #[arg(long, env = "SCAN_DRY_RUN", action = clap::ArgAction::SetTrue)]
     pub dry_run: bool,
 
@@ -103,8 +90,7 @@ pub struct Args {
     #[arg(short = 'v', long, env = "SCAN_VERBOSE")]
     pub verbose: bool,
 
-    /// Enable infinite loop scanning mode. Defaults to true; combine with
-    /// --round-delay-ms to avoid hammering the same subnet every pass.
+    /// Enable infinite loop scanning mode
     #[arg(short = 'l', long, env = "SCAN_LOOP_MODE", action = clap::ArgAction::SetTrue)]
     pub loop_mode: bool,
 
@@ -116,38 +102,19 @@ pub struct Args {
     #[arg(long, env = "SCAN_IPV6", action = clap::ArgAction::SetTrue)]
     pub ipv6: bool,
 
-    /// Only store open ports (save storage space and avoid persisting
-    /// closed/filtered state which can leak scan coverage).
+    /// Only store open ports (save storage space)
     #[arg(long, env = "SCAN_ONLY_OPEN", action = clap::ArgAction::SetTrue)]
     pub only_store_open: bool,
 
-    /// Skip RFC1918 / loopback / link-local / multicast / reserved IPv4.
-    /// Strongly recommended; disable only for explicitly authorized scans.
+    /// Skip private IP ranges (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16)
     #[arg(long, env = "SCAN_SKIP_PRIVATE", action = clap::ArgAction::SetTrue)]
     pub skip_private: bool,
 
-    /// Scan the entire public IPv4 space (skip RFC1918 and other reserved
-    /// ranges; equivalent to `--target 1.0.0.0-223.255.255.255` minus
-    /// RFC5735 special-purpose blocks). Off by default to comply with the
-    /// project's "only scan authorised assets" rule — opt in explicitly.
-    #[arg(
-        long = "scan-public",
-        env = "SCAN_PUBLIC",
-        action = clap::ArgAction::SetTrue,
-        help = "Scan the public IPv4 space (skip RFC1918 / reserved ranges)"
-    )]
-    pub scan_public: bool,
-
-    /// Enable SYN half-open scan mode. Requires Root/Admin and a platform
-    /// raw-socket / Npcap backend. Faster than connect and produces lighter
-    /// logs on the target, but no service banner is collected. Falls back
-    /// to connect scan automatically if the raw socket cannot be opened.
+    /// Enable SYN scan mode (requires Root/Admin)
     #[arg(long, env = "SCAN_SYN", action = clap::ArgAction::SetTrue)]
     pub syn: bool,
 
-    /// Enable API server mode. When combined with --probe-service the API
-    /// exposes every finding (Banners, TLS, risk score) — bind to a
-    /// trusted interface and protect with a reverse proxy in production.
+    /// Enable API server mode
     #[arg(long, env = "SCAN_API", action = clap::ArgAction::SetTrue)]
     pub api: bool,
 
@@ -163,9 +130,6 @@ pub struct Args {
     #[arg(long, env = "SCAN_SWAGGER_UI", action = clap::ArgAction::SetTrue)]
     pub swagger_ui: bool,
 
-    /// Target: IP, CIDR (e.g. 192.168.1.0/24), or range
-    /// (e.g. 192.168.1.1-192.168.1.255). Only scan assets you own or have
-    /// written authorization to test.
     #[arg(
         short = 'T',
         long,
@@ -174,12 +138,9 @@ pub struct Args {
     )]
     pub target: Option<String>,
 
-    /// Scan preset: quick (Top 100 ports, fast), standard (default ports,
-    /// balanced), or deep (1-65535, slow). quick sets --skip-private.
     #[arg(long, env = "SCAN_PRESET", help = "Scan preset: quick, standard, deep")]
     pub preset: Option<String>,
 
-    /// Output format (text or json) for --dry-run / nmap-style output mapping.
     #[arg(
         long,
         env = "SCAN_OUTPUT",
@@ -203,11 +164,7 @@ pub struct Args {
     #[arg(long, env = "SCAN_NO_GEO", action = clap::ArgAction::SetTrue)]
     pub no_geo: bool,
 
-    /// Enable service detection (probe every newly found open port with HTTP
-    /// GET, TLS ClientHello, and protocol Banner grabs). Will produce
-    /// application-layer traffic — enable only when the target's policy
-    /// permits it. Failed/empty probes are retried at most once per IP per
-    /// hour (see service_probe_state).
+    /// Enable service detection (probe open ports for banners, HTTP info, etc.)
     #[arg(long, env = "SCAN_PROBE_SERVICE", action = clap::ArgAction::SetTrue)]
     pub probe_service: bool,
 
@@ -226,31 +183,27 @@ pub struct Args {
     #[arg(long, env = "SCAN_WORKER_THREADS")]
     pub worker_threads: Option<usize>,
 
-    #[arg(long, env = "SCAN_PIPELINE_BUFFER", default_value = "65536", value_parser = parse_positive_usize)]
+    #[arg(long, env = "SCAN_PIPELINE_BUFFER", default_value = "2000", value_parser = parse_positive_usize)]
     pub pipeline_buffer: usize,
 
-    #[arg(long, env = "SCAN_RESULT_BUFFER", default_value = "50000", value_parser = parse_positive_usize)]
+    #[arg(long, env = "SCAN_RESULT_BUFFER", default_value = "10000", value_parser = parse_positive_usize)]
     pub result_buffer: usize,
 
-    #[arg(long, env = "SCAN_DB_BATCH_SIZE", default_value = "10000", value_parser = parse_positive_usize)]
+    #[arg(long, env = "SCAN_DB_BATCH_SIZE", default_value = "2000", value_parser = parse_positive_usize)]
     pub db_batch_size: usize,
 
-    #[arg(long, env = "SCAN_FLUSH_INTERVAL_MS", default_value = "2000")]
+    #[arg(long, env = "SCAN_FLUSH_INTERVAL_MS", default_value = "1000")]
     pub flush_interval_ms: u64,
 
-    /// Token-bucket rate limit (packets/sec). 0 = unlimited. Set to a
-    /// finite value when scanning internet-routable networks to stay below
-    /// common IDS / rate-limit thresholds.
-    #[arg(long, env = "SCAN_MAX_RATE", default_value = "0")]
+    #[arg(long, env = "SCAN_MAX_RATE", default_value = "100000")]
     pub max_rate: u64,
 
     #[arg(long, env = "SCAN_RATE_WINDOW_S", default_value = "1")]
     pub rate_window_secs: u64,
 
     /// Delay between scan rounds in loop mode (milliseconds, default 0).
-    /// Set above 0 (1000-5000) when scanning a single fixed range to avoid
-    /// hammering the same subnet each pass; leave at 0 for continuous
-    /// range sweeps.
+    /// Set above 0 when scanning a single fixed range to avoid hammering the
+    /// same subnet each pass; leave at 0 for continuous range sweeps.
     #[arg(long, env = "SCAN_ROUND_DELAY_MS", default_value = "0")]
     pub round_delay_ms: u64,
 }
@@ -424,7 +377,7 @@ fn default_timeout() -> u64 {
 }
 
 fn default_concurrency() -> usize {
-    2000
+    1000
 }
 
 fn default_database() -> String {
@@ -448,7 +401,7 @@ fn default_skip_private() -> bool {
 }
 
 fn default_max_rate() -> u64 {
-    0
+    200000
 }
 
 fn default_window_duration() -> u64 {
@@ -456,19 +409,19 @@ fn default_window_duration() -> u64 {
 }
 
 fn default_pipeline_buffer() -> usize {
-    65536
+    2000
 }
 
 fn default_result_buffer() -> usize {
-    50000
-}
-
-fn default_db_batch_size() -> usize {
     10000
 }
 
-fn default_flush_interval_ms() -> u64 {
+fn default_db_batch_size() -> usize {
     2000
+}
+
+fn default_flush_interval_ms() -> u64 {
+    1000
 }
 
 fn default_round_delay_ms() -> u64 {
@@ -500,13 +453,7 @@ fn default_geo_concurrency() -> usize {
 }
 
 impl Args {
-    /// Top 100 most common ports (nmap default with -F)
-    const TOP_100_PORTS: &'static str = "21,22,23,25,53,80,110,111,135,139,143,443,445,993,995,1723,3306,3389,5432,5900,6379,8080,8443,8888,9100,9200,11211,27017,50060";
-
     pub fn apply_preset(&mut self) {
-        // Apply Nmap-compatible arguments first so they take precedence
-        self.apply_nmap_args();
-
         if let Some(ref preset) = self.preset {
             match preset.as_str() {
                 "quick" => {
@@ -514,7 +461,7 @@ impl Args {
                     self.concurrency = 500;
                     self.max_rate = 200000;
                     if self.ports == default_ports() {
-                        self.ports = Self::TOP_100_PORTS.to_string();
+                        self.ports = "21,22,23,25,53,80,110,143,443,445,993,995,3306,3389,5432,6379,8080,8443,9200,27017".to_string();
                     }
                 }
                 "standard" => {
@@ -530,164 +477,8 @@ impl Args {
                         self.ports = "1-65535".to_string();
                     }
                 }
-                "fullpublic" => {
-                    // Opt-in preset: maximise scan speed across the public
-                    // IPv4 space. The CLI prints the legal reminder every
-                    // time this preset is selected and the rate limiter is
-                    // set to 0 (= UNLIMITED, run full bandwidth).
-                    self.timeout = 500;
-                    self.concurrency = 4_000;
-                    self.max_rate = 0;
-                    self.skip_private = true;
-                    self.scan_public = true;
-                    self.probe_service = true;
-                    self.probe_concurrency = 256;
-                    self.pipeline_buffer = self.pipeline_buffer.max(262_144);
-                    self.result_buffer = self.result_buffer.max(262_144);
-                    self.db_batch_size = self.db_batch_size.max(50_000);
-                    if self.ports == default_ports() {
-                        self.ports = Self::TOP_100_PORTS.to_string();
-                    }
-                    tracing::warn!(
-                        "preset=fullpublic: scanning the public IPv4 space at \
-                         unlimited rate. Only run this against networks you are \
-                         explicitly authorised to scan (e.g. your own /24). \
-                         Large or un-authorised public scans may violate local \
-                         law or your ISP's acceptable-use policy."
-                    );
-                }
                 _ => {}
             }
-        }
-
-        // --scan-public without an explicit target forces the public IPv4
-        // range and skip-private. The validate() step rejects ambiguous
-        // combinations (e.g. --scan-public with another target that resolves
-        // to RFC1918).
-        if self.scan_public && self.target.is_none()
-            && (self.start_ip.is_none() || self.end_ip.is_none())
-        {
-            self.start_ip = Some("1.0.0.0".to_string());
-            self.end_ip = Some("223.255.255.255".to_string());
-            self.ipv4 = true;
-            self.skip_private = true;
-        }
-    }
-
-    fn apply_nmap_args(&mut self) {
-        // -sS: SYN stealth scan
-        if self.nmap_sS {
-            self.syn = true;
-        }
-
-        // -sV: Service/version detection
-        if self.nmap_sV {
-            self.probe_service = true;
-        }
-
-        // -O: OS detection (maps to enhanced service probing)
-        if self.nmap_O {
-            self.probe_service = true;
-        }
-
-        // -A: Aggressive scan = -sV + -sC + -O + -T4
-        if self.nmap_A {
-            self.probe_service = true;
-            self.apply_timing_template("4");
-        }
-
-        // -sC: Default NSE scripts
-        if self.nmap_sC {
-            self.probe_service = true;
-        }
-
-        // -F: Fast mode - top 100 ports
-        if self.nmap_F && self.ports == default_ports() {
-            self.ports = Self::TOP_100_PORTS.to_string();
-        }
-
-        // --top-ports: Scan N most common ports
-        if let Some(n) = self.nmap_top_ports {
-            if self.ports == default_ports() {
-                self.ports = get_top_nmap_ports(n);
-            }
-        }
-
-        // -T0 ~ -T5: Timing templates
-        if let Some(ref t) = self.nmap_T {
-            self.apply_timing_template(t);
-        }
-
-        // Positional nmap targets
-        if !self.nmap_target.is_empty() && self.target.is_none() {
-            self.target = Some(self.nmap_target.join(" "));
-        }
-
-        // -iL: Read targets from file
-        if let Some(ref file_path) = self.nmap_iL {
-            if let Ok(content) = std::fs::read_to_string(file_path) {
-                let targets: Vec<String> = content
-                    .lines()
-                    .map(|l| l.trim().to_string())
-                    .filter(|l| !l.is_empty() && !l.starts_with('#'))
-                    .collect();
-                if !targets.is_empty() && self.target.is_none() {
-                    self.target = Some(targets.join(" "));
-                }
-            }
-        }
-
-        // --output-format: map nmap output formats
-        if let Some(ref oN) = self.nmap_oN {
-            self.output_format = "text".to_string();
-            self.database = oN.clone();
-        }
-        if let Some(ref oJ) = self.nmap_oJ {
-            self.output_format = "json".to_string();
-            self.database = oJ.clone();
-        }
-
-        // -sn: Ping scan only (sets loop_mode to false for single-run)
-        if self.nmap_sn {
-            self.loop_mode = false;
-            self.only_store_open = false;
-        }
-    }
-
-    fn apply_timing_template(&mut self, template: &str) {
-        match template {
-            "0" => {
-                self.timeout = 600_000;      // 10 min
-                self.concurrency = 2;
-                self.max_rate = 100;
-            }
-            "1" => {
-                self.timeout = 15_000;       // 15s
-                self.concurrency = 10;
-                self.max_rate = 500;
-            }
-            "2" => {
-                self.timeout = 4_000;        // 4s
-                self.concurrency = 50;
-                self.max_rate = 2_000;
-            }
-            "3" => {
-                self.timeout = 1_000;        // 1s (default)
-                self.concurrency = 200;
-                self.max_rate = 10_000;
-            }
-            "4" => {
-                self.timeout = 500;          // 500ms
-                self.concurrency = 1_000;
-                self.max_rate = 50_000;
-            }
-            "5" => {
-                self.timeout = 200;          // 200ms
-                self.concurrency = 2_000;
-                self.max_rate = 100_000;
-                self.skip_private = true;
-            }
-            _ => {}
         }
     }
 
@@ -876,7 +667,10 @@ impl Args {
             return Err(anyhow::anyhow!("DB batch size must be greater than 0"));
         }
 
-        // Validate rate limiting (0 = unlimited, handled by RateLimiter::unlimited)
+        // Validate rate limiting
+        if self.max_rate == 0 {
+            return Err(anyhow::anyhow!("Max rate must be greater than 0"));
+        }
         if self.rate_window_secs == 0 {
             return Err(anyhow::anyhow!("Rate window must be greater than 0"));
         }
@@ -970,44 +764,4 @@ mod tests {
         assert!(!Args::is_private_ipv4("172.15.0.1"));
         assert!(!Args::is_private_ipv4("172.32.0.1"));
     }
-
-    #[test]
-    fn test_nmap_sS_flag() {
-        let args = Args::try_parse_from(["ip-scan", "-sS", "192.168.1.1"]).unwrap();
-        assert!(args.nmap_sS);
-    }
-
-    #[test]
-    fn test_nmap_timing_t4() {
-        let mut args = Args::try_parse_from(["ip-scan", "-T4", "192.168.1.1"]).unwrap();
-        args.apply_preset();
-        assert_eq!(args.timeout, 500);
-        assert_eq!(args.concurrency, 1000);
-    }
-
-    #[test]
-    fn test_nmap_fast_mode() {
-        let mut args = Args::try_parse_from(["ip-scan", "-F", "192.168.1.1"]).unwrap();
-        args.apply_preset();
-        assert_ne!(args.ports, default_ports());
-    }
-}
-
-/// Get top N most commonly used ports based on nmap-services data
-fn get_top_nmap_ports(n: u16) -> String {
-    let all_ports: Vec<u16> = vec![
-        21, 22, 23, 25, 53, 80, 110, 111, 135, 139, 143, 443, 445, 993, 995, 1723, 3306, 3389,
-        5432, 5900, 6379, 8080, 8443, 8888, 9100, 9200, 11211, 27017, 50060, 179, 194, 201, 389,
-        443, 465, 514, 515, 587, 636, 873, 989, 990, 1433, 1521, 1720, 1723, 2049, 2375, 2376,
-        3000, 3001, 3002, 3003, 3004, 3005, 3006, 3007, 3008, 3009, 3010, 3011, 3012, 3013,
-        3014, 3015, 3016, 3017, 3018, 3019, 3020, 3021, 3022, 3023, 3024, 3025, 3026, 3027,
-        3028, 3029, 3030, 3031, 3032, 3033, 3034, 3035, 3036, 3037, 3038, 3039, 3040, 3041,
-        3042, 3043, 3044, 3045, 3046, 3047, 3048, 3049, 3050, 3051,
-    ];
-    let count = n.min(all_ports.len() as u16) as usize;
-    all_ports[..count]
-        .iter()
-        .map(|p| p.to_string())
-        .collect::<Vec<_>>()
-        .join(",")
 }

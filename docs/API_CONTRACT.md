@@ -56,18 +56,13 @@ Web 控制台与扫描服务通过版本化 HTTP JSON API 对接。前端不依�
 | 协议发现 | GET | `/system` | 版本和能力协商 |
 | 统计 | GET | `/stats` | 指标卡片 |
 | 端口分布 | GET | `/stats/top-ports?limit=10` | 服务分布图 |
-| 轮次变化 | GET | `/stats/changes?round=N&port=P` | 对比相邻轮次 |
-| Prometheus | GET | `/stats/prometheus` | 监控指标抓取 |
 | 结果列表 | GET | `/results?page=1&page_size=50` | 分页结果 |
-| 单 IP 服务 | GET | `/services/{ip}` | 服务摘要（含风险分） |
-| 服务列表 | GET | `/services?page=1&page_size=500` | IP 星图和站点聚合 |
+| 服务摘要 | GET | `/services?page=1&page_size=500` | IP 星图和站点聚合 |
 | 扫描状态 | GET | `/scan/status` | 状态轮询；区分 CLI/API 来源与可控性 |
 | 启动扫描 | POST | `/scan/start` | 创建扫描任务 |
-| 停止扫描 | POST | `/scan/stop` | 停止 API 发起的扫描任务 |
+| 停止扫描 | POST | `/scan/stop` | 停止扫描任务 |
 | 扫描历史 | GET | `/scan/history` | 历史列表 |
-| 数据导出 | GET | `/export/json`、`/export/csv`、`/export/ndjson` | 下载快照 |
-
-`risk_score` / `risk_reasons` 不是 CVE / 合规结论，详细语义见 [DATA_DICTIONARY.md](./DATA_DICTIONARY.md) 与 [SECURITY_KNOWLEDGE.md](./SECURITY_KNOWLEDGE.md)。
+| 数据导出 | GET | `/export/json`、`/export/csv` | 下载快照 |
 
 ## `/scan/status` 响应
 

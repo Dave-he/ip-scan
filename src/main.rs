@@ -49,31 +49,6 @@ fn print_scan_plan(args: &Args) -> Result<()> {
     } else {
         "enabled"
     };
-    // Lightweight per-port security hints for dry-run output. Mirrors the
-    // risk_reasons weighting in `IpServiceSummary::assess_risk` so users get
-    // an at-a-glance read on what their chosen port list is likely to surface.
-    let sensitive_ports: &[(u16, &str)] = &[
-        (23, "Telnet (cleartext remote admin — historically score 90)"),
-        (6379, "Redis (frequently unauthenticated — score 75)"),
-        (27017, "MongoDB (historically unauthenticated — score 75)"),
-        (9200, "Elasticsearch (often unauthenticated — score 75)"),
-        (11211, "Memcached (UDP reflection amplifier — score 75)"),
-        (3389, "RDP (remote desktop — score 60)"),
-        (5900, "VNC (remote desktop, weak auth — score 60)"),
-        (445, "SMB (WannaCry/EternalBlue history — depends on config)"),
-        (21, "FTP (cleartext credentials — score 40)"),
-        (25, "SMTP (open relay / STARTTLS check — score 40)"),
-        (110, "POP3 (cleartext — score 40)"),
-        (143, "IMAP (cleartext — score 40)"),
-        (3306, "MySQL (database exposure — score 75)"),
-        (5432, "PostgreSQL (database exposure — score 75)"),
-        (1433, "MSSQL (database exposure — score 75)"),
-    ];
-    let notes: Vec<u16> = sensitive_ports
-        .iter()
-        .map(|(p, _)| *p)
-        .filter(|p| ports.contains(p))
-        .collect();
     if args.output_format == "json" {
         println!(
             "{}",
@@ -81,42 +56,19 @@ fn print_scan_plan(args: &Args) -> Result<()> {
                 "target_start": start, "target_end": end, "ports": ports,
                 "port_expression": args.ports, "mode": mode,
                 "concurrency": args.concurrency, "geo_concurrency": args.geo_concurrency,
-                "service_probing": args.probe_service, "database": args.database, "api": api,
-                "sensitive_ports_in_plan": notes,
-                "skip_private": args.skip_private,
-                "max_rate": args.max_rate,
-                "syn": args.syn,
-                "loop_mode": args.loop_mode,
-                "round_delay_ms": args.round_delay_ms,
-                "doc": "docs/SECURITY_KNOWLEDGE.md"
+                "service_probing": args.probe_service, "database": args.database, "api": api
             })
         );
     } else {
         println!("Resolved scan plan:");
-        println!("  target:        {} - {}", start, end);
-        println!("  ports:         {} ({} ports)", args.ports, ports.len());
-        println!("  mode:          {}", mode);
-        println!("  concurrency:   {}", args.concurrency);
-        println!("  max rate:      {} pkt/s (0 = unlimited)", args.max_rate);
+        println!("  target: {} - {}", start, end);
+        println!("  ports: {} ({} ports)", args.ports, ports.len());
+        println!("  mode: {}", mode);
+        println!("  concurrency: {}", args.concurrency);
         println!("  geo concurrency: {}", args.geo_concurrency);
         println!("  service probing: {}", args.probe_service);
-        println!("  skip private:  {}", args.skip_private);
-        println!("  loop mode:     {} (round delay {} ms)", args.loop_mode, args.round_delay_ms);
-        println!("  database:      {}", args.database);
-        println!("  api:           {}", api);
-        if !notes.is_empty() {
-            println!();
-            println!("Sensitive services in plan (auto-flagged by port taxonomy):");
-            for (port, hint) in sensitive_ports.iter().filter(|(p, _)| notes.contains(p)) {
-                println!("  - {} : {}", port, hint);
-            }
-            println!(
-                "  See docs/SECURITY_KNOWLEDGE.md for the full per-port security context."
-            );
-        }
-        println!(
-            "\nReminder: only scan assets you own or are explicitly authorized to test."
-        );
+        println!("  database: {}", args.database);
+        println!("  api: {}", api);
     }
     Ok(())
 }
@@ -411,12 +363,8 @@ async fn enrich_discovered_assets(
                 let db = db.clone();
                 tasks.spawn(async move {
                     let _permit = permit;
-                    // Probe once, fill both tables: ServiceInfo for the API
-                    // summaries, TcpSnapshot for the raw protocol view.
-                    let (services, snapshots) =
-                        prober.probe_ip_with_snapshots(&ip, &ports).await;
+                    let services = prober.probe_ip(&ip, &ports).await;
                     db.save_service_info_batch(&services)?;
-                    db.save_tcp_snapshots_batch(&snapshots)?;
                     Ok::<(), anyhow::Error>(())
                 });
             }
