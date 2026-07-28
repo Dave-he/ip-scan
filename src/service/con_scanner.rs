@@ -26,6 +26,7 @@ struct TaskContext {
     result_tx: mpsc::Sender<(String, u16, bool)>,
     scan_round: i64,
     timeout_ms: u64,
+    only_store_open: bool,
 }
 
 #[inline]
@@ -66,6 +67,7 @@ pub struct ConScanner {
     metrics: ScanMetrics,
     rate_limiter: RateLimiter,
     result_tx: mpsc::Sender<(String, u16, bool)>,
+    only_store_open: bool,
 }
 
 #[derive(Clone)]
@@ -77,6 +79,13 @@ pub struct ConScannerConfig {
     pub flush_interval_ms: u64,
     pub max_rate: u64,
     pub rate_window_secs: u64,
+    /// When true, drop closed-port results on the producer side and
+    /// never send them to the DB writer. Safe to use with the SQLite
+    /// "open_ports_detail" table because it only records opens; the
+    /// bitmap table is gated separately via SqliteDB::set_skip_bitmap
+    /// in --only-store-open mode. Skipping the message-passing
+    /// dominates throughput on large port sets.
+    pub only_store_open: bool,
 }
 
 impl ConScanner {
@@ -109,6 +118,7 @@ impl ConScanner {
             metrics: ScanMetrics::new(),
             rate_limiter,
             result_tx: tx,
+            only_store_open: config.only_store_open,
         }
     }
 
@@ -201,6 +211,7 @@ impl ConScanner {
             result_tx: self.result_tx.clone(),
             scan_round: self.scan_round,
             timeout_ms: self.timeout_ms,
+            only_store_open: self.only_store_open,
         });
         let mut join_set: JoinSet<()> = JoinSet::new();
         let mut total_dispatched: usize = 0;
@@ -267,6 +278,14 @@ impl ConScanner {
                                 round = ctx.scan_round,
                                 "Found open port"
                             );
+                        }
+                        // only_store_open: skip closed results on the
+                        // producer side. The DB writer cannot record
+                        // them (open_ports_detail records opens only;
+                        // bitmap table is gated by SqliteDB), and the
+                        // mpsc send is the dominant hot-path cost.
+                        if ctx.only_store_open && !is_open {
+                            return;
                         }
                         if let Err(e) = ctx.result_tx.send((ip_str_c, port, is_open)).await {
                             error!("Result channel send error: {}", e);
@@ -335,6 +354,14 @@ impl ConScanner {
                                 "Found open port"
                             );
                         }
+                        // only_store_open: skip closed results on the
+                        // producer side. The DB writer cannot record
+                        // them (open_ports_detail records opens only;
+                        // bitmap table is gated by SqliteDB), and the
+                        // mpsc send is the dominant hot-path cost.
+                        if ctx.only_store_open && !is_open {
+                            return;
+                        }
                         if let Err(e) = ctx.result_tx.send((ip_str_c, port, is_open)).await {
                             error!("Result channel send error: {}", e);
                         }
@@ -397,6 +424,7 @@ impl ConScanner {
             result_tx: self.result_tx.clone(),
             scan_round: self.scan_round,
             timeout_ms: self.timeout_ms,
+            only_store_open: self.only_store_open,
         });
         let mut join_set = JoinSet::new();
 
@@ -459,6 +487,7 @@ mod tests {
             flush_interval_ms: 1000,
             max_rate: 10000,
             rate_window_secs: 1,
+            only_store_open: true,
         };
         let scanner = ConScanner::new(db, 1, config);
         let ip: IpAddr = "127.0.0.1".parse().unwrap();
@@ -480,6 +509,7 @@ mod tests {
             flush_interval_ms: 1000,
             max_rate: 10000,
             rate_window_secs: 1,
+            only_store_open: true,
         };
         let scanner = ConScanner::new(db, 1, config);
         let ip: IpAddr = "127.0.0.1".parse().unwrap();
@@ -505,6 +535,7 @@ mod tests {
             flush_interval_ms: 1000,
             max_rate: 10000,
             rate_window_secs: 1,
+            only_store_open: true,
         };
         let scanner = ConScanner::new(db.clone(), 1, config);
         let ip: IpAddr = "127.0.0.1".parse().unwrap();

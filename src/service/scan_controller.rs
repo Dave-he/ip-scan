@@ -331,6 +331,7 @@ impl ScanController {
                 flush_interval_ms: args.flush_interval_ms,
                 max_rate: args.max_rate,
                 rate_window_secs: args.rate_window_secs,
+                only_store_open: args.only_store_open,
             };
             let scanner = ConScanner::new(db.clone(), current_round, config);
             scanner
