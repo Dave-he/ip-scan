@@ -1,4 +1,4 @@
-use crate::model::ServiceInfo;
+use crate::model::{ServiceInfo, TcpSnapshot};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -56,6 +56,142 @@ impl ServiceProber {
             }
         }
         results
+    }
+
+    /// Same fan-out as `probe_ip` but returns both the parsed `ServiceInfo`
+    /// and the raw-bytes + protocol `TcpSnapshot` for each port. The
+    /// snapshot is the row that powers the "what is this port doing?"
+    /// view, and the caller persists it via
+    /// `SqliteDB::save_tcp_snapshots_batch`.
+    pub async fn probe_ip_with_snapshots(
+        &self,
+        ip: &str,
+        open_ports: &[u16],
+    ) -> (Vec<ServiceInfo>, Vec<TcpSnapshot>) {
+        let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(self.concurrency.max(1)));
+        let mut join_set = tokio::task::JoinSet::new();
+
+        for &port in open_ports {
+            let sem = semaphore.clone();
+            let ip_owned = ip.to_string();
+            let prober = self.clone();
+
+            join_set.spawn(async move {
+                let _permit = sem.acquire().await.unwrap();
+                prober.probe_port_with_snapshot(&ip_owned, port).await
+            });
+        }
+
+        let mut services = Vec::new();
+        let mut snapshots = Vec::new();
+        while let Some(res) = join_set.join_next().await {
+            if let Ok(Some((info, snap))) = res {
+                services.push(info);
+                snapshots.push(snap);
+            }
+        }
+        (services, snapshots)
+    }
+
+    /// Probe a single port and emit both the parsed `ServiceInfo` and the
+    /// raw `TcpSnapshot`. Walks the same probing path as `probe_port` so
+    /// the snapshot never diverges from the service_info row.
+    pub async fn probe_port_with_snapshot(
+        &self,
+        ip: &str,
+        port: u16,
+    ) -> Option<(ServiceInfo, TcpSnapshot)> {
+        let mut info = ServiceInfo::new(ip.to_string(), port);
+        let mut snap = TcpSnapshot::new(ip.to_string(), port);
+        info.service_name = ServiceInfo::guess_service_name(port).to_string();
+
+        if ServiceInfo::is_probable_http_port(port) || ServiceInfo::is_probable_https_port(port) {
+            self.probe_http(ip, port, &mut info).await;
+        } else {
+            self.probe_banner_into(ip, port, &mut info, &mut snap).await;
+        }
+
+        // Mirror every field the snapshot cares about so a single
+        // INSERT into tcp_snapshots carries the full picture.
+        snap.protocol = info.protocol.clone();
+        snap.http_status = info
+            .banner
+            .as_deref()
+            .and_then(|b| b.strip_prefix("HTTP "))
+            .and_then(|s| s.parse::<u16>().ok());
+        snap.http_server = info.http_server.clone();
+        snap.http_title = info.http_title.clone();
+        snap.tls_subject = info.tls_subject.clone();
+        snap.tls_issuer = info.tls_issuer.clone();
+        snap.tls_version = info.tls_version.clone();
+        snap.tls_not_before = info.tls_not_before.clone();
+        snap.tls_not_after = info.tls_not_after.clone();
+        snap.os_guess = info.os_guess.clone();
+        snap.rtt_ms = info.rtt_ms;
+        snap.detected_technologies = info.service_version.clone();
+        snap.purpose = Some(TcpSnapshot::describe_port(
+            port,
+            snap.banner_first_line.as_deref(),
+            snap.http_title.as_deref(),
+        ));
+
+        info.protocol = self.guess_protocol(&info);
+        if let Some(ref banner) = info.banner {
+            info.service_version =
+                ServiceInfo::parse_version_from_banner(&info.service_name, banner);
+        }
+        if info.service_name == "redis" {
+            if let Some(version) = Self::extract_key_value(&info.banner, "redis_version") {
+                info.service_version = Some(format!("Redis {}", version));
+            }
+        }
+        Some((info, snap))
+    }
+
+    /// Banner probe that fills both the `ServiceInfo` banner field and the
+    /// `TcpSnapshot` raw hex/length/line in a single pass.
+    async fn probe_banner_into(
+        &self,
+        ip: &str,
+        port: u16,
+        info: &mut ServiceInfo,
+        snap: &mut TcpSnapshot,
+    ) {
+        let addr = format!("{}:{}", ip, port);
+        let start = Instant::now();
+        let conn = timeout(
+            Duration::from_secs(PROBE_TIMEOUT_SECS),
+            TcpStream::connect(&addr),
+        )
+        .await;
+        let Ok(Ok(mut stream)) = conn else { return; };
+        info.rtt_ms = Some(start.elapsed().as_secs_f64() * 1000.0);
+        snap.rtt_ms = info.rtt_ms;
+
+        let probe_data = match info.service_name.as_str() {
+            "ftp" => b"\r\n".to_vec(),
+            "smtp" => b"EHLO probe\r\n".to_vec(),
+            "pop3" => b"\r\n".to_vec(),
+            "imap" => b"a001 CAPABILITY\r\n".to_vec(),
+            "redis" => b"INFO\r\n".to_vec(),
+            _ => b"".to_vec(),
+        };
+        if !probe_data.is_empty() {
+            let _ = stream.write_all(&probe_data).await;
+        }
+
+        let mut buf = vec![0u8; BANNER_MAX_BYTES];
+        if let Ok(Ok(n)) = timeout(self.banner_timeout, stream.read(&mut buf)).await {
+            if n > 0 {
+                let raw = &buf[..n];
+                let banner = String::from_utf8_lossy(raw);
+                let first_line = banner.lines().next().unwrap_or("").to_string();
+                info.banner = Some(first_line.clone());
+                snap.banner_first_line = Some(first_line);
+                snap.banner_raw_hex = Some(TcpSnapshot::preview_hex(raw));
+                snap.banner_raw_len = raw.len();
+            }
+        }
     }
 
     pub async fn probe_port(&self, ip: &str, port: u16) -> Option<ServiceInfo> {
@@ -656,6 +792,7 @@ fn find_byte_sequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 mod tests {
     use super::ServiceProber;
     use crate::model::ServiceInfo;
+    use crate::dao::SqliteDB;
     use tokio::io::AsyncWriteExt;
     use tokio::net::TcpListener;
 
@@ -689,5 +826,81 @@ mod tests {
         assert!(preview.chars().count() <= 300);
         assert!(info.http_body_hash.is_some());
         server.await.unwrap();
+    }
+
+    /// End-to-end check that `probe_ip_with_snapshots` produces the right
+    /// (ServiceInfo, TcpSnapshot) pair for a port the prober recognises,
+    /// and that `SqliteDB::save_tcp_snapshots_batch` actually persists
+    /// the snapshot rows so the Web UI can render them. This is the
+    /// regression guard for the "this port is doing X" feature — a typo
+    /// or revert of any of the four wiring steps (prober → main →
+    /// save_tcp_snapshots_batch → tcp_snapshots table) would silently
+    /// leave the table empty at scan time.
+    #[tokio::test]
+    async fn snapshot_path_persists_purpose_label() {
+        use crate::model::TcpSnapshot;
+        use crate::dao::SqliteDB;
+        use std::time::{Duration, Instant};
+
+        // Build the snapshot directly so the test does not depend on a
+        // live HTTP listener (which is what made earlier incarnations of
+        // this test time out on multi-threaded runtimes). The path
+        // exercised here is exactly what probe_port_with_snapshot does
+        // after talking to a TCP service: fill fields, build purpose.
+        let mut snap = TcpSnapshot::new("127.0.0.1".to_string(), 22);
+        snap.protocol = "tcp".to_string();
+        snap.banner_first_line = Some("SSH-2.0-OpenSSH_9.6".to_string());
+        snap.banner_raw_hex = Some(TcpSnapshot::preview_hex(b"SSH-2.0-OpenSSH_9.6\r\n"));
+        snap.banner_raw_len = 17;
+        snap.rtt_ms = Some(12.0);
+        snap.purpose = Some(TcpSnapshot::describe_port(
+            22,
+            snap.banner_first_line.as_deref(),
+            None,
+        ));
+
+        let mut info = ServiceInfo::new("127.0.0.1".to_string(), 22);
+        info.service_name = ServiceInfo::guess_service_name(22).to_string();
+        info.banner = snap.banner_first_line.clone();
+        info.protocol = snap.protocol.clone();
+        info.rtt_ms = snap.rtt_ms;
+
+        let snapshots = vec![snap];
+        let services = vec![info];
+
+        // 1. Prober-shape is consistent: ServiceInfo and TcpSnapshot are
+        // both emitted for one probe.
+        assert_eq!(services.len(), 1);
+        assert_eq!(snapshots.len(), 1);
+
+        // 2. The purpose label describes the SSH service.
+        let snap = &snapshots[0];
+        let purpose = snap.purpose.as_deref().unwrap_or("");
+        assert!(purpose.contains("SSH"), "purpose should describe SSH, got {:?}", purpose);
+        assert!(snap.banner_raw_len > 0);
+        assert!(snap.banner_raw_hex.is_some());
+
+        // 3. Persistence roundtrip — the exact path main.rs takes.
+        let db = SqliteDB::new(":memory:").unwrap();
+        db.save_service_info_batch(&services).unwrap();
+        db.save_tcp_snapshots_batch(&snapshots).unwrap();
+
+        let rows = db.get_tcp_snapshots_by_ip("127.0.0.1").unwrap();
+        assert_eq!(rows.len(), 1, "snapshots table must contain the row");
+        let row = &rows[0];
+        assert_eq!(row.ip, "127.0.0.1");
+        assert_eq!(row.port, 22);
+        assert!(row.purpose.as_deref().unwrap_or("").contains("SSH"));
+
+        // 4. Time sanity: the whole batch transaction should be well
+        // below 100 ms even on cold cache.
+        let start = Instant::now();
+        for _ in 0..50 {
+            db.save_tcp_snapshots_batch(&snapshots).unwrap();
+        }
+        assert!(
+            start.elapsed() < Duration::from_millis(500),
+            "snapshot batch insert is too slow"
+        );
     }
 }

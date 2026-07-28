@@ -1,7 +1,9 @@
 mod con_scanner;
 pub mod geo_service;
 pub mod optimized_scanner;
+pub mod output_formatter;
 mod rate_limiter;
+pub mod raw_scanner;
 mod scan_controller;
 pub mod service_prober;
 mod syn_scanner;
@@ -12,7 +14,9 @@ pub use geo_service::GeoService;
 pub use optimized_scanner::{
     quick_scan, range_scan, OptimizedScanner, OptimizedScannerConfig, PortState,
 };
+pub use output_formatter::{OutputFormat, OutputFormatter};
 pub use rate_limiter::RateLimiter;
+pub use raw_scanner::{Probe, RawScanner, RawScannerConfig, ScanResult};
 pub use scan_controller::{RuntimeScanState, ScanController};
 pub use service_prober::{reverse_dns_lookup, ServiceProber};
 pub use syn_scanner::SynScanner;

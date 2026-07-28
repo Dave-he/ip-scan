@@ -748,5 +748,86 @@ async fn run_scanner_logic(
         let _ = handle.await;
     }
 
+    // Write nmap-style output files if requested.
+    write_nmap_outputs(&db, &args);
+
     Ok(())
+}
+
+/// Emit any nmap-compat output files requested by `--oN`, `--oX`, `--oG`,
+/// `--oA`, or `--oJ`. Each writes to `<base>{.nmap,.xml,.gnmap,.json}`
+/// just like nmap itself. If the base already ends with the format
+/// extension we use it as-is; otherwise we append it.
+fn write_nmap_outputs(db: &SqliteDB, args: &cli::Args) {
+    let formatter = service::OutputFormatter::new(
+        &format!(
+            "{} {}",
+            std::env::args().next().unwrap_or_else(|| "ip-scan".into()),
+            std::env::args()
+                .skip(1)
+                .collect::<Vec<_>>()
+                .join(" ")
+        ),
+        env!("CARGO_PKG_VERSION"),
+    );
+
+    fn with_ext(base: &str, ext: &str) -> String {
+        if base.ends_with(ext) {
+            base.to_string()
+        } else {
+            format!("{}{}", base, ext)
+        }
+    }
+
+    let writes: Vec<(&Option<String>, service::OutputFormat, &str)> = vec![
+        (&args.nmap_oN, service::OutputFormat::Normal, ".nmap"),
+        (&args.nmap_oX, service::OutputFormat::Xml, ".xml"),
+        (&args.nmap_oG, service::OutputFormat::Grepable, ".gnmap"),
+        (&args.nmap_oJ, service::OutputFormat::Json, ".json"),
+    ];
+    for (slot, fmt, ext) in &writes {
+        if let Some(base) = slot.as_ref() {
+            let path = with_ext(base, ext);
+            match std::fs::File::create(&path) {
+                Ok(mut f) => {
+                    let r = match fmt {
+                        service::OutputFormat::Normal => formatter.write_normal(db, &mut f),
+                        service::OutputFormat::Xml => formatter.write_xml(db, &mut f),
+                        service::OutputFormat::Grepable => formatter.write_grepable(db, &mut f),
+                        service::OutputFormat::Json => formatter.write_json(db, &mut f),
+                        _ => Ok(()),
+                    };
+                    if let Err(e) = r {
+                        error!("Failed to write {}: {}", path, e);
+                    } else {
+                        info!("Wrote {}", path);
+                    }
+                }
+                Err(e) => error!("Failed to open {}: {}", path, e),
+            }
+        }
+    }
+    // -oA <base>: write all three primary nmap formats under one base.
+    if let Some(ref base) = args.nmap_oA {
+        for (fmt, ext) in [
+            (service::OutputFormat::Normal, ".nmap"),
+            (service::OutputFormat::Xml, ".xml"),
+            (service::OutputFormat::Grepable, ".gnmap"),
+        ] {
+            let path = with_ext(base, ext);
+            if let Ok(mut f) = std::fs::File::create(&path) {
+                let r = match fmt {
+                    service::OutputFormat::Normal => formatter.write_normal(db, &mut f),
+                    service::OutputFormat::Xml => formatter.write_xml(db, &mut f),
+                    service::OutputFormat::Grepable => formatter.write_grepable(db, &mut f),
+                    _ => Ok(()),
+                };
+                if let Err(e) = r {
+                    error!("Failed to write {}: {}", path, e);
+                } else {
+                    info!("Wrote {}", path);
+                }
+            }
+        }
+    }
 }

@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info};
 
 #[cfg(target_os = "windows")]
 use pnet_datalink::{self as datalink, Channel, MacAddr};
@@ -34,8 +34,6 @@ use regex::Regex;
 #[cfg(target_os = "windows")]
 use std::process::Command;
 
-use super::syn_scanner::{PktSender, ScannerTx};
-
 /// Result of a ping sweep
 #[derive(Debug, Clone)]
 pub struct PingResult {
@@ -46,7 +44,6 @@ pub struct PingResult {
 
 /// High-performance Ping Sweep Scanner for host discovery
 pub struct PingScanner {
-    pkt_sender: Arc<PktSender>,
     rate_limiter: super::RateLimiter,
     active_hosts: Arc<Mutex<HashMap<Ipv4Addr, bool>>>,
     total_probes: Arc<AtomicUsize>,
@@ -66,44 +63,7 @@ impl PingScanner {
         // Pre-build source IP cache
         let (source_ip_cache, default_source_ip) = Self::build_source_ip_cache();
 
-        let num_workers = std::cmp::max(2, num_cpus());
-
-        let empty_metrics = crate::model::ScanMetrics::new();
-
-        info!("Initializing Ping scanner with {} send workers", num_workers);
-
-        #[cfg(not(target_os = "windows"))]
-        let pkt_sender = {
-            let transport_proto = TransportProtocol::Ipv4(IpNextHeaderProtocols::Tcp);
-            PktSender::new(
-                transport_proto,
-                source_ip_cache.clone(),
-                default_source_ip,
-                num_workers,
-                empty_metrics,
-            )?
-        };
-
-        #[cfg(target_os = "windows")]
-        let pkt_sender = {
-            let (_gateway_ip, gateway_mac, interface_ip) = Self::get_gateway_info_windows()
-                .map_err(|e| {
-                    anyhow!(
-                        "Failed to get gateway info: {}. Make sure Npcap is installed.",
-                        e
-                    )
-                })?;
-
-            PktSender::new(
-                gateway_mac,
-                interface_ip,
-                gateway_mac,
-                source_ip_cache.clone(),
-                default_source_ip,
-                num_workers,
-                empty_metrics,
-            )?
-        };
+        info!("Initializing Ping scanner");
 
         let active_hosts = Arc::new(Mutex::new(HashMap::new()));
         let active_hosts_clone = active_hosts.clone();
@@ -227,31 +187,7 @@ impl PingScanner {
             });
         }
 
-        let (tokio_tx, mut tokio_rx) = mpsc::channel::<(Ipv4Addr, u16)>(65536);
-        let pkt_sender_clone = pkt_sender.clone();
-        let cache_clone = source_ip_cache.clone();
-        let default_clone = default_source_ip;
-
-        thread::spawn(move || {
-            while let Some((dst_ip, dst_port)) = tokio_rx.blocking_recv() {
-                let src_ip = cache_clone.get(&dst_ip).copied().unwrap_or(default_clone);
-                // Use a fixed port for ping sweep to make it identifiable
-                let ping_port = 80;
-                let mut rng = rand::thread_rng();
-
-                #[cfg(not(target_os = "windows"))]
-                {
-                    PingScanner::send_one_syn_ping(dst_ip, ping_port, src_ip, &mut rng);
-                }
-                #[cfg(target_os = "windows")]
-                {
-                    PingScanner::send_one_syn_ping_win(dst_ip, ping_port, src_ip, &mut rng);
-                }
-            }
-        });
-
         Ok(PingScanner {
-            pkt_sender: Arc::new(pkt_sender),
             rate_limiter,
             active_hosts,
             total_probes: Arc::new(AtomicUsize::new(0)),
@@ -377,43 +313,30 @@ impl PingScanner {
         self.total_probes.store(0, Ordering::Relaxed);
         self.alive_hosts.store(0, Ordering::Relaxed);
 
-        let mut ips_to_probe = Vec::with_capacity(total);
-        for ip_int in start..=end {
-            let ip = Ipv4Addr::from(ip_int);
-            ips_to_probe.push(ip);
-        }
+        let ips_to_probe: Vec<Ipv4Addr> = (start..=end)
+            .map(Ipv4Addr::from)
+            .collect();
 
         // Send probes with rate limiting
-        let (tx, rx) = mpsc::channel(1000);
-        let ips = ips_to_probe.clone();
         let rate_limiter = self.rate_limiter.clone();
+        let cache = self.source_ip_cache.clone();
+        let default_src = self.default_source_ip;
 
-        // Spawn sender
-        let sender_handle = tokio::spawn(async move {
-            for ip in ips {
-                rate_limiter.acquire().await;
-                let _ = tx.send(ip).await;
-            }
-        });
-
-        // Process received
-        let mut sent = 0;
-        while let Some(ip) = rx.recv().await {
+        for &ip in &ips_to_probe {
+            rate_limiter.acquire().await;
+            
+            let src_ip = cache.get(&ip).copied().unwrap_or(default_src);
+            let mut rng = rand::thread_rng();
+            
+            #[cfg(not(target_os = "windows"))]
+            Self::send_one_syn_ping(ip, 80, src_ip, &mut rng);
+            
             self.total_probes.fetch_add(1, Ordering::Relaxed);
-            sent += 1;
-
-            let _ = self.pkt_sender.send((ip, 80));
-
-            if sent % 1000 == 0 {
-                info!("Ping sweep progress: {}/{}", sent, total);
-            }
         }
 
-        drop(rx);
-        let _ = sender_handle.await;
+        info!("Sent {} ping probes, waiting for responses...", ips_to_probe.len());
 
         // Wait for responses with timeout
-        info!("Waiting for ping responses (timeout: {:?})...", timeout);
         let start_time = Instant::now();
 
         // Simple polling with sleep
@@ -469,12 +392,6 @@ impl PingScanner {
         let alive = self.alive_hosts.load(Ordering::Relaxed);
         (total, alive)
     }
-}
-
-fn num_cpus() -> usize {
-    std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(4)
 }
 
 #[cfg(test)]

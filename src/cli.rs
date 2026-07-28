@@ -70,7 +70,7 @@ pub struct Args {
     pub timeout: u64,
 
     /// Number of concurrent connections (I/O-bound: set high)
-    #[arg(short = 'c', long, env = "SCAN_CONCURRENCY", default_value = "500", value_parser = parse_positive_usize)]
+    #[arg(short = 'c', long, env = "SCAN_CONCURRENCY", default_value = "4000", value_parser = parse_positive_usize)]
     pub concurrency: usize,
 
     /// Database file path
@@ -113,6 +113,36 @@ pub struct Args {
     /// Enable SYN scan mode (requires Root/Admin)
     #[arg(long, env = "SCAN_SYN", action = clap::ArgAction::SetTrue)]
     pub syn: bool,
+
+    /// Scan the entire public IPv4 space (skip RFC1918 and other reserved
+    /// ranges; equivalent to `--target 1.0.0.0-223.255.255.255` minus
+    /// RFC5735 special-purpose blocks). Off by default to comply with the
+    /// project's "only scan authorised assets" rule — opt in explicitly.
+    #[arg(
+        long = "scan-public",
+        env = "SCAN_PUBLIC",
+        action = clap::ArgAction::SetTrue,
+        help = "Scan the public IPv4 space (skip RFC1918 / reserved ranges)"
+    )]
+    pub scan_public: bool,
+
+    /// Use the bandwidth-saturating raw connect scanner. The default
+    /// `--raw` mode spawns one Tokio task per probe and tops out at a
+    /// few thousand probes/sec. `--raw` switches to a syscall-level
+    /// scanner that holds thousands of in-flight non-blocking sockets
+    /// per worker thread and is built to saturate the network link.
+    #[arg(long, env = "SCAN_RAW", action = clap::ArgAction::SetTrue)]
+    pub raw: bool,
+
+    /// Override the number of worker threads used by the raw scanner.
+    /// Defaults to the number of physical cores.
+    #[arg(long, env = "SCAN_RAW_WORKERS", value_parser = parse_positive_usize)]
+    pub raw_workers: Option<usize>,
+
+    /// Override the per-worker in-flight socket cap for the raw scanner.
+    /// Each in-flight slot costs one file descriptor.
+    #[arg(long, env = "SCAN_RAW_INFLIGHT", value_parser = parse_positive_usize)]
+    pub raw_inflight: Option<usize>,
 
     /// Enable API server mode
     #[arg(long, env = "SCAN_API", action = clap::ArgAction::SetTrue)]
@@ -183,19 +213,21 @@ pub struct Args {
     #[arg(long, env = "SCAN_WORKER_THREADS")]
     pub worker_threads: Option<usize>,
 
-    #[arg(long, env = "SCAN_PIPELINE_BUFFER", default_value = "2000", value_parser = parse_positive_usize)]
+    #[arg(long, env = "SCAN_PIPELINE_BUFFER", default_value = "65536", value_parser = parse_positive_usize)]
     pub pipeline_buffer: usize,
 
-    #[arg(long, env = "SCAN_RESULT_BUFFER", default_value = "10000", value_parser = parse_positive_usize)]
+    #[arg(long, env = "SCAN_RESULT_BUFFER", default_value = "65536", value_parser = parse_positive_usize)]
     pub result_buffer: usize,
 
-    #[arg(long, env = "SCAN_DB_BATCH_SIZE", default_value = "2000", value_parser = parse_positive_usize)]
+    #[arg(long, env = "SCAN_DB_BATCH_SIZE", default_value = "10000", value_parser = parse_positive_usize)]
     pub db_batch_size: usize,
 
-    #[arg(long, env = "SCAN_FLUSH_INTERVAL_MS", default_value = "1000")]
+    #[arg(long, env = "SCAN_FLUSH_INTERVAL_MS", default_value = "2000")]
     pub flush_interval_ms: u64,
 
-    #[arg(long, env = "SCAN_MAX_RATE", default_value = "100000")]
+    /// Max packets per second per scanner. Set to 0 for unlimited (run at
+    /// full throughput until the network or target rate-limits).
+    #[arg(long, env = "SCAN_MAX_RATE", default_value = "0")]
     pub max_rate: u64,
 
     #[arg(long, env = "SCAN_RATE_WINDOW_S", default_value = "1")]
@@ -206,6 +238,78 @@ pub struct Args {
     /// same subnet each pass; leave at 0 for continuous range sweeps.
     #[arg(long, env = "SCAN_ROUND_DELAY_MS", default_value = "0")]
     pub round_delay_ms: u64,
+
+    // === Nmap-compatible arguments ===
+    /// SYN stealth scan (-sS)
+    #[arg(long = "sS", help = "Nmap compat: SYN stealth scan")]
+    pub nmap_sS: bool,
+
+    /// Connect scan (-sT, default behavior)
+    #[arg(long = "sT", help = "Nmap compat: TCP connect scan")]
+    pub nmap_sT: bool,
+
+    /// Ping scan only (-sn)
+    #[arg(long = "sn", help = "Nmap compat: Ping scan only")]
+    pub nmap_sn: bool,
+
+    /// Service/version detection (-sV)
+    #[arg(long = "sV", help = "Nmap compat: Service/version detection")]
+    pub nmap_sV: bool,
+
+    /// OS detection (-O)
+    #[arg(
+        long = "O",
+        help = "Nmap compat: OS detection (maps to enhanced probing)"
+    )]
+    pub nmap_O: bool,
+
+    /// Aggressive scan (-A = -sV + -sC + -O + -T4)
+    #[arg(long = "A", help = "Nmap compat: Aggressive scan (-sV -sC -O -T4)")]
+    pub nmap_A: bool,
+
+    /// Default NSE scripts (-sC)
+    #[arg(long = "sC", help = "Nmap compat: Default NSE scripts")]
+    pub nmap_sC: bool,
+
+    /// Fast mode - top 100 ports (-F)
+    #[arg(long = "F", help = "Nmap compat: Fast mode (top 100 ports)")]
+    pub nmap_F: bool,
+
+    /// Timing template (-T0 ~ -T5)
+    #[arg(long = "T", help = "Nmap compat: Timing template (0-5)")]
+    pub nmap_T: Option<String>,
+
+    /// Scan N most common ports (--top-ports)
+    #[arg(long = "top-ports", help = "Nmap compat: Scan N most common ports")]
+    pub nmap_top_ports: Option<usize>,
+
+    /// Read targets from file (-iL)
+    #[arg(long = "iL", help = "Nmap compat: Read targets from file")]
+    pub nmap_iL: Option<String>,
+
+    /// Normal output (-oN)
+    #[arg(long = "oN", help = "Nmap compat: Normal output file")]
+    pub nmap_oN: Option<String>,
+
+    /// JSON output (-oJ)
+    #[arg(long = "oJ", help = "Nmap compat: JSON output file")]
+    pub nmap_oJ: Option<String>,
+
+    /// Grepable output (-oG)
+    #[arg(long = "oG", help = "Nmap compat: Grepable output file")]
+    pub nmap_oG: Option<String>,
+
+    /// XML output (-oX)
+    #[arg(long = "oX", help = "Nmap compat: XML output file")]
+    pub nmap_oX: Option<String>,
+
+    /// All output formats (-oA)
+    #[arg(long = "oA", help = "Nmap compat: All output formats")]
+    pub nmap_oA: Option<String>,
+
+    /// Positional nmap target arguments (e.g., IP ranges)
+    #[arg(hide = true)]
+    pub nmap_target: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -377,7 +481,7 @@ fn default_timeout() -> u64 {
 }
 
 fn default_concurrency() -> usize {
-    1000
+    4000
 }
 
 fn default_database() -> String {
@@ -401,7 +505,7 @@ fn default_skip_private() -> bool {
 }
 
 fn default_max_rate() -> u64 {
-    200000
+    0
 }
 
 fn default_window_duration() -> u64 {
@@ -409,19 +513,19 @@ fn default_window_duration() -> u64 {
 }
 
 fn default_pipeline_buffer() -> usize {
-    2000
+    65536
 }
 
 fn default_result_buffer() -> usize {
-    10000
+    65536
 }
 
 fn default_db_batch_size() -> usize {
-    2000
+    10000
 }
 
 fn default_flush_interval_ms() -> u64 {
-    1000
+    2000
 }
 
 fn default_round_delay_ms() -> u64 {
@@ -458,27 +562,131 @@ impl Args {
             match preset.as_str() {
                 "quick" => {
                     self.timeout = 200;
-                    self.concurrency = 500;
-                    self.max_rate = 200000;
+                    self.concurrency = 4000;
+                    self.max_rate = 0;
                     if self.ports == default_ports() {
                         self.ports = "21,22,23,25,53,80,110,143,443,445,993,995,3306,3389,5432,6379,8080,8443,9200,27017".to_string();
                     }
                 }
                 "standard" => {
                     self.timeout = 500;
-                    self.concurrency = 1000;
-                    self.max_rate = 100000;
+                    self.concurrency = 4000;
+                    self.max_rate = 0;
                 }
                 "deep" => {
                     self.timeout = 2000;
-                    self.concurrency = 200;
-                    self.max_rate = 50000;
+                    self.concurrency = 1000;
+                    self.max_rate = 0;
                     if self.ports == default_ports() {
                         self.ports = "1-65535".to_string();
                     }
                 }
+                "max-speed" => {
+                    // Maximum-throughput preset: opt into the raw scanner,
+                    // disable rate limiting, and increase in-flight / DB
+                    // batch sizes to the limits that the raw scanner can
+                    // actually push through. Use this when you control
+                    // the target network and want to find every open
+                    // TCP port as quickly as the link allows.
+                    self.timeout = 800;
+                    self.concurrency = 8_000;
+                    self.max_rate = 0;
+                    self.skip_private = true;
+                    self.raw = true;
+                    self.probe_service = true;
+                    self.probe_concurrency = 512;
+                    self.pipeline_buffer = self.pipeline_buffer.max(1 << 20);
+                    self.result_buffer = self.result_buffer.max(1 << 20);
+                    self.db_batch_size = self.db_batch_size.max(50_000);
+                    self.flush_interval_ms = self.flush_interval_ms.min(500);
+                    if self.ports == default_ports() {
+                        self.ports = "21,22,23,25,53,80,110,143,443,445,993,995,3306,3389,5432,6379,8080,8443,9200,27017".to_string();
+                    }
+                    tracing::warn!(
+                        "preset=max-speed: enabling the bandwidth-saturating \
+                         raw scanner with unlimited rate. Only run this \
+                         against networks you are explicitly authorised to \
+                         test."
+                    );
+                }
+                "fullpublic" => {
+                    // Opt-in preset for the user's goal: scan every public
+                    // IPv4 × top ports at full bandwidth. Same plumbing as
+                    // max-speed but with --scan-public forced on and 18-port
+                    // top-list. Logs the legal reminder on every run.
+                    self.timeout = 800;
+                    self.concurrency = 8_000;
+                    self.max_rate = 0;
+                    self.skip_private = true;
+                    self.scan_public = true;
+                    self.raw = true;
+                    self.probe_service = true;
+                    self.probe_concurrency = 512;
+                    self.pipeline_buffer = self.pipeline_buffer.max(1 << 20);
+                    self.result_buffer = self.result_buffer.max(1 << 20);
+                    self.db_batch_size = self.db_batch_size.max(50_000);
+                    self.flush_interval_ms = self.flush_interval_ms.min(500);
+                    if self.ports == default_ports() {
+                        self.ports = "21,22,23,25,53,80,110,143,443,445,993,995,3306,3389,5432,6379,8080,8443,9200,27017".to_string();
+                    }
+                    tracing::warn!(
+                        "preset=fullpublic: scanning the public IPv4 space at \
+                         full bandwidth via the raw scanner. Only run this \
+                         against networks you are explicitly authorised to \
+                         test. Large or un-authorised public scans may \
+                         violate local law or your ISP's acceptable-use \
+                         policy."
+                    );
+                }
                 _ => {}
             }
+        }
+
+        // --scan-public without an explicit target expands to the full
+        // public IPv4 range and forces skip-private. The validate() step
+        // catches any contradictory combination (e.g. a separately-
+        // provided CIDR that resolves to RFC1918).
+        if self.scan_public && self.target.is_none()
+            && (self.start_ip.is_none() || self.end_ip.is_none())
+        {
+            self.start_ip = Some("1.0.0.0".to_string());
+            self.end_ip = Some("223.255.255.255".to_string());
+            self.ipv4 = true;
+            self.skip_private = true;
+        }
+    }
+
+    /// Translate nmap-compat fields (--sV/--O/--A/--iL/--T<n>) into the
+    /// internal Args fields that actually drive the scan. Runs at the end
+    /// of `merge_with_config`. Safe to call multiple times.
+    pub fn apply_nmap_args(&mut self) {
+        // --sV / --O / --sC / --A: enable service probing.
+        if self.nmap_sV || self.nmap_O || self.nmap_sC || self.nmap_A {
+            self.probe_service = true;
+        }
+        // --A implies aggressive timing.
+        if self.nmap_A {
+            self.concurrency = self.concurrency.max(1_000);
+            self.timeout = self.timeout.min(800);
+            self.max_rate = 0;
+        }
+        // --iL <file>: read targets, append to --target.
+        if let Some(ref path) = self.nmap_iL {
+            if let Ok(content) = std::fs::read_to_string(path) {
+                let mut joined = self.nmap_target.clone();
+                for line in content.lines() {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() || trimmed.starts_with('#') {
+                        continue;
+                    }
+                    joined.push(trimmed.to_string());
+                }
+                self.nmap_target = joined;
+            }
+        }
+        // Positional nmap-style targets appended after the --iL lines.
+        if !self.nmap_target.is_empty() && self.target.is_none() {
+            self.target = Some(self.nmap_target.join(" "));
         }
     }
 
@@ -619,6 +827,7 @@ impl Args {
         }
 
         self.apply_preset();
+        self.apply_nmap_args();
 
         if let Some(ref target) = self.target {
             if let Ok(range) = crate::model::IpRange::parse_target(target) {
@@ -668,10 +877,8 @@ impl Args {
         }
 
         // Validate rate limiting
-        if self.max_rate == 0 {
-            return Err(anyhow::anyhow!("Max rate must be greater than 0"));
-        }
-        if self.rate_window_secs == 0 {
+        // max_rate == 0 means unlimited and is valid; > 0 must be positive
+        if self.max_rate > 0 && self.rate_window_secs == 0 {
             return Err(anyhow::anyhow!("Rate window must be greater than 0"));
         }
 

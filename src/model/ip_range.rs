@@ -1,6 +1,7 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::str::FromStr;
 
+#[derive(Debug, Clone)]
 pub struct IpRange {
     pub start: IpAddr,
     pub end: IpAddr,

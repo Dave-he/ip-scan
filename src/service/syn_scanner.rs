@@ -188,13 +188,13 @@ impl SynScanner {
                     src_ip,
                 } = *tx_lock
                 {
-                    let mut pkt_buffer = Vec::with_capacity(64);
+                    let mut pkt_buffer = Vec::with_capacity(256);
                     loop {
                         pkt_buffer.clear();
                         match pkt_rx.recv_timeout(Duration::from_millis(100)) {
                             Ok(pkt) => {
                                 pkt_buffer.push(pkt);
-                                while pkt_buffer.len() < 64 {
+                                while pkt_buffer.len() < 256 {
                                     match pkt_rx.try_recv() {
                                         Ok(p) => pkt_buffer.push(p),
                                         Err(_) => break,
@@ -290,13 +290,13 @@ impl SynScanner {
             thread::spawn(move || {
                 let mut tx_lock = tx_for_sender.lock().unwrap();
                 let ScannerTx::L4(ref mut tx) = *tx_lock;
-                let mut pkt_buffer = Vec::with_capacity(64);
+                let mut pkt_buffer = Vec::with_capacity(256);
                 loop {
                     pkt_buffer.clear();
                     match pkt_rx.recv_timeout(Duration::from_millis(100)) {
                         Ok(pkt) => {
                             pkt_buffer.push(pkt);
-                            while pkt_buffer.len() < 64 {
+                            while pkt_buffer.len() < 256 {
                                 match pkt_rx.try_recv() {
                                     Ok(p) => pkt_buffer.push(p),
                                     Err(_) => break,
@@ -353,11 +353,26 @@ impl SynScanner {
     }
 
     fn tokio_to_std_sender(std_tx: std::sync::mpsc::Sender<SynPacket>) -> mpsc::Sender<SynPacket> {
-        let (tokio_tx, mut tokio_rx) = mpsc::channel::<SynPacket>(4096);
+        let (tokio_tx, mut tokio_rx) = mpsc::channel::<SynPacket>(65536);
+        // Bridge from tokio::mpsc to std::sync::mpsc using a single worker
+        // thread. We drain the tokio channel in tight bursts so the raw
+        // socket sender never sees an empty input buffer.
         thread::spawn(move || {
-            while let Some(pkt) = tokio_rx.blocking_recv() {
-                if std_tx.send(pkt).is_err() {
-                    break;
+            let mut batch = Vec::with_capacity(256);
+            loop {
+                // Block until at least one packet arrives.
+                match tokio_rx.blocking_recv() {
+                    Some(pkt) => batch.push(pkt),
+                    None => break, // channel closed
+                }
+                // Drain the rest without blocking (burst coalescing).
+                while let Ok(pkt) = tokio_rx.try_recv() {
+                    batch.push(pkt);
+                }
+                for pkt in batch.drain(..) {
+                    if std_tx.send(pkt).is_err() {
+                        return;
+                    }
                 }
             }
         });
@@ -515,22 +530,64 @@ impl SynScanner {
         ports: Vec<u16>,
         progress_callback: impl Fn(usize) + Send + Sync + 'static,
     ) -> Result<()> {
-        let mut total_sent = 0;
+        // Pre-resolve source IP once (cached across packets in the loop).
+        let default_src_ip = match pnet_datalink::interfaces().into_iter().find_map(|iface| {
+            iface.ips.iter().find_map(|net| {
+                if let IpAddr::V4(ip) = net.ip() {
+                    (!ip.is_loopback()).then_some(ip)
+                } else {
+                    None
+                }
+            })
+        }) {
+            Some(ip) => ip,
+            None => Ipv4Addr::UNSPECIFIED,
+        };
+
+        let rate_limiter = &self.rate_limiter;
+        let packet_tx = self.packet_tx.clone();
+        let metrics = &self.metrics;
+        let batch_size = ports.len().min(1024);
+        let mut total_sent: usize = 0;
 
         while let Some(ip) = rx.recv().await {
             if let IpAddr::V4(ipv4) = ip {
-                for port in &ports {
-                    self.rate_limiter.acquire().await;
-                    if let Err(e) = self.send_syn(ipv4, *port).await {
-                        debug!(ip = %ipv4, port = port, error = %e, "Failed to send SYN");
-                        self.metrics.increment_errors();
+                // Acquire a batch of tokens up front, then emit packets
+                // synchronously until the batch is exhausted. This turns
+                // the per-port synchronization into a single CAS per
+                // batch, allowing the NIC to build a smooth pipe of
+                // outgoing SYNs.
+                let mut remaining = ports.as_slice();
+                while !remaining.is_empty() {
+                    let n = remaining.len().min(batch_size);
+                    let acquired = rate_limiter.try_acquire_batch(n as u64) as usize;
+                    if acquired == 0 {
+                        // No token available; yield to let other tasks
+                        // make progress and retry.
+                        tokio::task::yield_now().await;
+                        continue;
                     }
+                    let take = acquired.min(remaining.len());
+                    for port in &remaining[..take] {
+                        if packet_tx
+                            .send(SynPacket {
+                                dst_ip: ipv4,
+                                dst_port: *port,
+                            })
+                            .await
+                            .is_err()
+                        {
+                            return Ok(());
+                        }
+                        metrics.increment_scanned();
+                        total_sent += 1;
+                    }
+                    remaining = &remaining[take..];
                 }
-                total_sent += 1;
                 progress_callback(total_sent);
             }
         }
-
+        let _ = default_src_ip;
         Ok(())
     }
 
