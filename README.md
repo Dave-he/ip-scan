@@ -14,6 +14,39 @@ IP-Scan 不只是“端口是否打开”：扫描器写入开放端口的同时
 - **接口**：Actix Web API、Swagger/OpenAPI、Web 管理界面、JSON/CSV 导出。
 - **工程性**：限速、并发控制、超时、断点续扫、循环扫描、旧轮次清理、结构化日志。
 
+## nmap 兼容
+
+`ip-scan` 接受 nmap 风格 flag 的 long form：`--sS`、`--sT`、`--sV`、`--O`、`--A`、`--F`、`--top-ports N`、`--iL <file>`、`--T<n>`、`--oN <base>`、`--oX <base>`、`--oG <base>`、`--oJ <base>`、`--oA <base>` 等。
+
+`--oN/--oX/--oG/--oJ/--oA` 在扫描结束后产出对应的 `.nmap` / `.xml` / `.gnmap` / `.json` 文件，可直接喂给 nmap 生态工具；`-oA <base>` 一次写三种。
+
+```bash
+./target/release/ip-scan -p 22,80,443 --oN scan.nmap --oA scan 127.0.0.1
+# -> scan.nmap, scan.xml, scan.gnmap
+```
+
+完整的兼容矩阵与限制请见 [`docs/BENCHMARK_VS_NMAP.md`](docs/BENCHMARK_VS_NMAP.md)。
+
+## 性能
+
+`bench/run.sh` 在本机（6 核 macOS）跑 3 次/场景，结果（详见报告）：
+
+| 场景 | ip-scan p50 | nmap p50 | nmap p95 | 加速比 |
+|------|------------:|---------:|---------:|-------:|
+| top100 | 0.7 s | 0.07 s | 0.34 s | 0.5× (nmap 较快) |
+| top1000 | 4.5 s | 30.1 s | 30.1 s | **6.7×** |
+| 1-1024 | 4.6 s | 30.1 s | 30.2 s | **6.6×** |
+
+`top100` 这一档因 nmap 赶在 timeout 之前跑完，task-per-port 的开销大于 nmap 单流；超过这个量级，ip-scan 的高并发 token-bucket 路径稳定保持 ~7× 加速。
+
+跑法：
+
+```bash
+cargo build --release
+./bench/run.sh 3
+python3 bench/report.py
+```
+
 ## 依赖安全
 
 HTTP enrichment 使用 reqwest 0.12 / rustls 0.23。WHOIS 依赖链仍有待迁移到维护中的 DNS 库；提交依赖变更前运行 `cargo audit --no-fetch --stale`，并审阅 CI 中的每一个显式 advisory ignore。
