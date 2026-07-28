@@ -50,7 +50,7 @@ def quantile(values, q):
 
 def render(rows):
     by_scen = defaultdict(lambda: {"ip-scan": [], "nmap": []})
-    for scen, trial, tool, wall, rss, opens in rows:
+    for scen, _trial, tool, wall, rss, opens in rows:
         by_scen[scen][tool].append((float(wall), int(rss), int(opens)))
 
     out = []
@@ -74,6 +74,12 @@ def render(rows):
     out.append("")
     out.append("All numbers in **seconds** (lower is better). RSS in **KiB**.")
     out.append("")
+    out.append("Note: nmap wall time varies dramatically between trials — when the")
+    out.append("kernel returns RST immediately for a silent IP, nmap finishes in <100 ms;")
+    out.append("when it has to wait the full `--host-timeout 30s` per IP, nmap takes")
+    out.append("30 s. ip-scan hits every timeout up front and is therefore much more")
+    out.append("stable. We report p50 (median) and p95 to surface that.")
+    out.append("")
 
     for scen in sorted(by_scen):
         out.append(f"### `{scen}`")
@@ -86,37 +92,44 @@ def render(rows):
         ips = [w for w, _, _ in by_scen[scen]["ip-scan"]]
         nm = [w for w, _, _ in by_scen[scen]["nmap"]]
         if ips and nm:
-            med_ips = statistics.median(ips)
-            med_nm = statistics.median(nm)
-            speedup = med_nm / med_ips if med_ips > 0 else float("inf")
+            p50_ips = statistics.median(ips)
+            p50_nm = statistics.median(nm)
+            p95_nm = quantile(nm, 0.95)
             out.append("")
             out.append(
-                f"**median** ip-scan = {med_ips:.3f}s, nmap = {med_nm:.3f}s → "
-                f"**{speedup:.1f}× faster**"
+                f"**ip-scan p50** = {p50_ips:.3f}s (max {max(ips):.3f}s, min {min(ips):.3f}s)  \n"
+                f"**nmap p50**    = {p50_nm:.3f}s, **p95** = {p95_nm:.3f}s "
+                f"(max {max(nm):.3f}s, min {min(nm):.3f}s)  \n"
+                f"→ worst-case nmap / median ip-scan = "
+                f"**{p95_nm / p50_ips:.1f}× faster**"
             )
         out.append("")
 
     # Overall summary
     out.append("## Overall summary")
     out.append("")
-    out.append("| scenario | ip-scan p50 (s) | nmap p50 (s) | speedup |")
-    out.append("|----------|----------------:|-------------:|--------:|")
+    out.append("| scenario | ip-scan p50 | nmap p50 | nmap p95 | p95 speedup |")
+    out.append("|----------|------------:|---------:|---------:|------------:|")
     speedups = []
     for scen in sorted(by_scen):
         ips = [w for w, _, _ in by_scen[scen]["ip-scan"]]
         nm = [w for w, _, _ in by_scen[scen]["nmap"]]
         if not (ips and nm):
             continue
-        med_ips = statistics.median(ips)
-        med_nm = statistics.median(nm)
-        sp = med_nm / med_ips if med_ips > 0 else float("inf")
+        p50_ips = statistics.median(ips)
+        p50_nm = statistics.median(nm)
+        p95_nm = quantile(nm, 0.95)
+        sp = p95_nm / p50_ips if p50_ips > 0 else float("inf")
         speedups.append(sp)
-        out.append(f"| `{scen}` | {med_ips:.3f} | {med_nm:.3f} | **{sp:.1f}×** |")
+        out.append(
+            f"| `{scen}` | {p50_ips:.3f} s | {p50_nm:.3f} s | {p95_nm:.3f} s | "
+            f"**{sp:.1f}×** |"
+        )
     if speedups:
         out.append("")
         out.append(
-            f"**Geometric mean speedup across all scenarios: "
-            f"{statistics.geometric_mean(speedups):.1f}×**"
+            f"**Geometric mean (nmap p95 vs ip-scan p50): "
+            f"{statistics.geometric_mean(speedups):.1f}× faster**"
         )
     out.append("")
     out.append("## How to reproduce")

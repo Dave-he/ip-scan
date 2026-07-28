@@ -19,7 +19,7 @@ RES="$PWD0/bench/results.csv"
 IPSCAN_BIN="$PWD0/target/release/ip-scan"
 NMAP_BIN=/usr/local/bin/nmap
 NMAP_SERVICES=/usr/local/share/nmap/nmap-services
-TARGET=127.0.0.1-127
+TARGET=127.0.0.1-127.0.0.255
 # 127.0.0.0-127.0.0.255 has only 127.0.0.1 answering TCP; the rest
 # are silent and burn one full timeout each — exactly the stress
 # shape we want for comparing connect-mode throughput.
@@ -54,6 +54,11 @@ NMAP_RTT="${TIMEOUT_MS}ms"
 # skipped otherwise. The --skip-private CLI flag is SetTrue with
 # no negation form, so the only way to override is the config file.
 IPS_CONFIG="$PWD0/bench/ipscan.toml"
+# Target range. 127.0.0.1-127.0.0.255 = 255 hosts. Only 127.0.0.1
+# answers TCP; the rest burn one full timeout each — exactly the
+# stress shape we want for connect-mode throughput comparison.
+TARGET=127.0.0.1-127.0.0.255
+TARGET_RANGE=127.0.0.1-127.0.0.255
 IPS_FLAGS=(
   --config "$IPS_CONFIG"
   --start-ip 127.0.0.1 --end-ip 127.0.0.255

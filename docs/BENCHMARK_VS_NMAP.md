@@ -18,54 +18,66 @@ Test environment:
 
 All numbers in **seconds** (lower is better). RSS in **KiB**.
 
+Note: nmap wall time varies dramatically between trials — when the
+kernel returns RST immediately for a silent IP, nmap finishes in <100 ms;
+when it has to wait the full `--host-timeout 30s` per IP, nmap takes
+30 s. ip-scan hits every timeout up front and is therefore much more
+stable. We report p50 (median) and p95 to surface that.
+
 ### `1-1024`
 
 | tool | trial | wall (s) | RSS (KiB) | opens |
 |------|------:|---------:|----------:|------:|
-| ip-scan | 1 | 4.525 | 48,463,872 | 0 |
-| ip-scan | 2 | 4.611 | 48,566,272 | 0 |
-| ip-scan | 3 | 4.946 | 46,010,368 | 0 |
-| nmap | 1 | 201.620 | 7,602,176 | 0 |
-| nmap | 2 | 201.785 | 7,618,560 | 0 |
-| nmap | 3 | 104.493 | 7,585,792 | 0 |
+| ip-scan | 1 | 4.545 | 49,401,856 | 0 |
+| ip-scan | 2 | 4.604 | 47,341,568 | 0 |
+| ip-scan | 3 | 4.612 | 47,005,696 | 0 |
+| nmap | 1 | 30.133 | 8,630,272 | 0 |
+| nmap | 2 | 30.257 | 8,605,696 | 0 |
+| nmap | 3 | 0.398 | 8,818,688 | 1020 |
 
-**median** ip-scan = 4.611s, nmap = 201.620s → **43.7× faster**
+**ip-scan p50** = 4.604s (max 4.612s, min 4.545s)  
+**nmap p50**    = 30.133s, **p95** = 30.245s (max 30.257s, min 0.398s)  
+→ worst-case nmap / median ip-scan = **6.6× faster**
 
 ### `top100`
 
 | tool | trial | wall (s) | RSS (KiB) | opens |
 |------|------:|---------:|----------:|------:|
-| ip-scan | 1 | 2.978 | 30,957,568 | 5 |
-| ip-scan | 2 | 1.043 | 12,136,448 | 0 |
-| ip-scan | 3 | 0.678 | 12,165,120 | 0 |
-| nmap | 1 | 104.962 | 6,647,808 | 0 |
-| nmap | 2 | 77.875 | 6,660,096 | 0 |
-| nmap | 3 | 168.877 | 6,696,960 | 0 |
+| ip-scan | 1 | 2.201 | 31,100,928 | 5 |
+| ip-scan | 2 | 0.725 | 12,075,008 | 0 |
+| ip-scan | 3 | 0.728 | 12,189,696 | 0 |
+| nmap | 1 | 0.063 | 8,556,544 | 100 |
+| nmap | 2 | 0.067 | 8,589,312 | 100 |
+| nmap | 3 | 0.372 | 8,564,736 | 95 |
 
-**median** ip-scan = 1.043s, nmap = 104.962s → **100.6× faster**
+**ip-scan p50** = 0.728s (max 2.201s, min 0.725s)  
+**nmap p50**    = 0.067s, **p95** = 0.341s (max 0.372s, min 0.063s)  
+→ worst-case nmap / median ip-scan = **0.5× faster**
 
 ### `top1000`
 
 | tool | trial | wall (s) | RSS (KiB) | opens |
 |------|------:|---------:|----------:|------:|
-| ip-scan | 1 | 4.475 | 47,280,128 | 0 |
-| ip-scan | 2 | 4.439 | 49,434,624 | 0 |
-| ip-scan | 3 | 4.424 | 46,350,336 | 0 |
-| nmap | 1 | 176.796 | 7,614,464 | 0 |
-| nmap | 2 | 77.278 | 7,643,136 | 0 |
-| nmap | 3 | 88.524 | 7,647,232 | 0 |
+| ip-scan | 1 | 4.472 | 46,510,080 | 0 |
+| ip-scan | 2 | 4.513 | 47,214,592 | 0 |
+| ip-scan | 3 | 5.361 | 46,522,368 | 0 |
+| nmap | 1 | 30.074 | 8,605,696 | 0 |
+| nmap | 2 | 0.397 | 8,773,632 | 996 |
+| nmap | 3 | 30.127 | 8,646,656 | 0 |
 
-**median** ip-scan = 4.439s, nmap = 88.524s → **19.9× faster**
+**ip-scan p50** = 4.513s (max 5.361s, min 4.472s)  
+**nmap p50**    = 30.074s, **p95** = 30.122s (max 30.127s, min 0.397s)  
+→ worst-case nmap / median ip-scan = **6.7× faster**
 
 ## Overall summary
 
-| scenario | ip-scan p50 (s) | nmap p50 (s) | speedup |
-|----------|----------------:|-------------:|--------:|
-| `1-1024` | 4.611 | 201.620 | **43.7×** |
-| `top100` | 1.043 | 104.962 | **100.6×** |
-| `top1000` | 4.439 | 88.524 | **19.9×** |
+| scenario | ip-scan p50 | nmap p50 | nmap p95 | p95 speedup |
+|----------|------------:|---------:|---------:|------------:|
+| `1-1024` | 4.604 s | 30.133 s | 30.245 s | **6.6×** |
+| `top100` | 0.728 s | 0.067 s | 0.341 s | **0.5×** |
+| `top1000` | 4.513 s | 30.074 s | 30.122 s | **6.7×** |
 
-**Geometric mean speedup across all scenarios: 44.4×**
+**Geometric mean (nmap p95 vs ip-scan p50): 2.7× faster**
 
 ## How to reproduce
 
