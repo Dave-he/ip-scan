@@ -141,6 +141,7 @@ async fn run_api_server(args: &Args) -> Result<()> {
 
     // Initialize database
     let db = SqliteDB::new(&args.database)?;
+    db.set_skip_bitmap(args.only_store_open);
     info!("Database initialized: {}", args.database);
 
     // Start API server without a CLI-managed scanner.
@@ -161,6 +162,7 @@ async fn run_scanner(args: &Args) -> Result<()> {
 
     // Initialize bitmap database
     let db = SqliteDB::new(&args.database)?;
+    db.set_skip_bitmap(args.only_store_open);
     info!("Database initialized");
 
     // Initialize GeoService
@@ -181,6 +183,7 @@ async fn run_combined(args: &Args) -> Result<()> {
 
     // Initialize database
     let db = SqliteDB::new(&args.database)?;
+    db.set_skip_bitmap(args.only_store_open);
     info!("Database initialized: {}", args.database);
 
     // Start scanner in background and expose its lifecycle to the API. This
@@ -363,8 +366,13 @@ async fn enrich_discovered_assets(
                 let db = db.clone();
                 tasks.spawn(async move {
                     let _permit = permit;
-                    let services = prober.probe_ip(&ip, &ports).await;
+                    // Probe once, fill both tables: ServiceInfo for the API
+                    // summaries, TcpSnapshot for the raw protocol view that
+                    // answers "what is this port doing?".
+                    let (services, snapshots) =
+                        prober.probe_ip_with_snapshots(&ip, &ports).await;
                     db.save_service_info_batch(&services)?;
+                    db.save_tcp_snapshots_batch(&snapshots)?;
                     Ok::<(), anyhow::Error>(())
                 });
             }
@@ -491,143 +499,187 @@ async fn run_scanner_logic(
             };
 
             info!("Scanning IPv4: {} - {}", actual_start_ip, end_ip);
+            let mut ran_raw = false;
             match IpRange::new(&actual_start_ip, &end_ip) {
                 Ok(ip_range) => {
                     let start_time = std::time::Instant::now();
 
-                    let (tx, rx) = tokio::sync::mpsc::channel(args.pipeline_buffer);
+                    // The raw scanner is fully synchronous; skip the async
+                    // mpsc producer/consumer wiring and run it directly.
+                    // This is the bandwidth-saturating path enabled by
+                    // --raw / --preset max-speed.
+                    if args.raw {
+                        let ncpu = std::thread::available_parallelism()
+                            .map(|n| n.get())
+                            .unwrap_or(4);
+                        let raw_config = service::RawScannerConfig {
+                            timeout_ms: args.timeout,
+                            num_workers: args.raw_workers.unwrap_or(ncpu.max(2)),
+                            max_inflight_per_worker: args.raw_inflight.unwrap_or(8_192),
+                            result_buffer: args.result_buffer.max(1 << 20),
+                            db_batch_size: args.db_batch_size.max(20_000),
+                            flush_interval_ms: args.flush_interval_ms,
+                            max_rate: args.max_rate,
+                            rate_window_secs: args.rate_window_secs.max(1),
+                            shuffle: true,
+                        };
+                        let scanner =
+                            service::RawScanner::new(db.clone(), current_round, raw_config);
+                        scanner.run(ip_range.clone(), &ports)?;
+                        let elapsed = start_time.elapsed().as_secs_f64();
+                        let metrics = scanner.get_metrics();
+                        info!(
+                            "IPv4 raw scan completed in {:.2}s — scanned: {} open: {}",
+                            elapsed,
+                            metrics.get_scanned(),
+                            metrics.get_open()
+                        );
+                        metrics.print_summary();
+                        if resume_ip_type.as_deref() == Some("IPv4") {
+                            info!("IPv4 scan complete, clearing resume state");
+                            resume_ip = None;
+                            resume_ip_type = None;
+                        }
+                        ran_raw = true;
+                    }
 
-                    // Producer Task
-                    let args_clone = args.clone();
-                    let ip_iter = ip_range.iter();
-                    let producer = tokio::spawn(async move {
-                        for ip in ip_iter {
-                            if args_clone.skip_private && Args::is_private_ipv4(&ip.to_string()) {
-                                continue;
-                            }
-                            // Skip 0.0.0.0/8 range as it's not routable
-                            if let std::net::IpAddr::V4(ipv4) = ip {
-                                if ipv4.octets()[0] == 0 {
+                    if !ran_raw {
+                        let (tx, rx) = tokio::sync::mpsc::channel(args.pipeline_buffer);
+
+                        // Producer Task
+                        let args_clone = args.clone();
+                        let ip_iter = ip_range.iter();
+                        let producer = tokio::spawn(async move {
+                            for ip in ip_iter {
+                                if args_clone.skip_private && Args::is_private_ipv4(&ip.to_string())
+                                {
                                     continue;
                                 }
+                                // Skip 0.0.0.0/8 range as it's not routable
+                                if let std::net::IpAddr::V4(ipv4) = ip {
+                                    if ipv4.octets()[0] == 0 {
+                                        continue;
+                                    }
+                                }
+                                if tx.send(ip).await.is_err() {
+                                    break;
+                                }
                             }
-                            if tx.send(ip).await.is_err() {
-                                break;
-                            }
-                        }
-                    });
+                        });
 
-                    // Consumer (Scanner)
-                    let current_round_clone = current_round;
+                        // Consumer (Scanner)
+                        let current_round_clone = current_round;
 
-                    let metrics = if args.syn {
-                        // SYN Scan Mode
-                        match SynScanner::new(
-                            db.clone(),
-                            current_round,
-                            args.result_buffer,
-                            args.db_batch_size,
-                            args.flush_interval_ms,
-                            args.max_rate,
-                            args.rate_window_secs,
-                        ) {
-                            Ok(scanner) => {
-                                scanner
-                                    .run_pipeline(rx, ports.clone(), move |total_scanned| {
-                                        if total_scanned % 1000 == 0 {
-                                            let elapsed = start_time.elapsed().as_secs_f64();
-                                            let rate = total_scanned as f64 / elapsed;
-                                            info!(
+                        let metrics = if args.syn {
+                            // SYN Scan Mode
+                            match SynScanner::new(
+                                db.clone(),
+                                current_round,
+                                args.result_buffer,
+                                args.db_batch_size,
+                                args.flush_interval_ms,
+                                args.max_rate,
+                                args.rate_window_secs,
+                            ) {
+                                Ok(scanner) => {
+                                    scanner
+                                        .run_pipeline(rx, ports.clone(), move |total_scanned| {
+                                            if total_scanned % 1000 == 0 {
+                                                let elapsed = start_time.elapsed().as_secs_f64();
+                                                let rate = total_scanned as f64 / elapsed;
+                                                info!(
                                                 "IPv4 Progress [R{}]: {} IPs - {:.2} packets/sec",
                                                 current_round_clone, total_scanned, rate
                                             );
-                                        }
-                                    })
-                                    .await?;
-                                scanner.get_metrics().clone()
-                            }
-                            Err(e) => {
-                                error!("Failed to initialize SYN scanner: {}", e);
-                                error!(
+                                            }
+                                        })
+                                        .await?;
+                                    scanner.get_metrics().clone()
+                                }
+                                Err(e) => {
+                                    error!("Failed to initialize SYN scanner: {}", e);
+                                    error!(
                                     "提示: SYN 扫描需要 Root/Admin 权限。降级为普通连接扫描模式..."
                                 );
-                                info!("如需使用 SYN 扫描,请使用超级管理员权限重新运行程序:");
-                                #[cfg(target_os = "windows")]
-                                info!("  - Windows: 右键以管理员身份运行");
-                                #[cfg(not(target_os = "windows"))]
-                                info!("  - Linux/macOS: sudo ./ip-scan --syn ...");
+                                    info!("如需使用 SYN 扫描,请使用超级管理员权限重新运行程序:");
+                                    #[cfg(target_os = "windows")]
+                                    info!("  - Windows: 右键以管理员身份运行");
+                                    #[cfg(not(target_os = "windows"))]
+                                    info!("  - Linux/macOS: sudo ./ip-scan --syn ...");
 
-                                // 降级为连接扫描
-                                let config = service::ConScannerConfig {
-                                    timeout_ms: args.timeout,
-                                    concurrent_limit: args.concurrency,
-                                    result_buffer: args.result_buffer,
-                                    db_batch_size: args.db_batch_size,
-                                    flush_interval_ms: args.flush_interval_ms,
-                                    max_rate: args.max_rate,
-                                    rate_window_secs: args.rate_window_secs,
-                                };
-                                let scanner = ConScanner::new(db.clone(), current_round, config);
-                                scanner
-                                    .run_pipeline(rx, ports.clone(), move |total_scanned| {
-                                        if total_scanned % 1000 == 0 {
-                                            let elapsed = start_time.elapsed().as_secs_f64();
-                                            let rate = total_scanned as f64 / elapsed;
-                                            info!(
-                                                "IPv4 Progress [R{}]: {} IPs - {:.2} IPs/sec",
-                                                current_round_clone, total_scanned, rate
-                                            );
-                                        }
-                                    })
-                                    .await?;
-                                scanner.get_metrics().clone()
-                            }
-                        }
-                    } else {
-                        // Connect Scan Mode
-                        let config = service::ConScannerConfig {
-                            timeout_ms: args.timeout,
-                            concurrent_limit: args.concurrency,
-                            result_buffer: args.result_buffer,
-                            db_batch_size: args.db_batch_size,
-                            flush_interval_ms: args.flush_interval_ms,
-                            max_rate: args.max_rate,
-                            rate_window_secs: args.rate_window_secs,
-                        };
-                        let scanner = ConScanner::new(db.clone(), current_round, config);
-                        scanner
-                            .run_pipeline(rx, ports.clone(), move |total_scanned| {
-                                if total_scanned % 1000 == 0 {
-                                    let elapsed = start_time.elapsed().as_secs_f64();
-                                    let rate = total_scanned as f64 / elapsed;
-                                    info!(
-                                        "IPv4 Progress [R{}]: {} IPs - {:.2} IPs/sec",
-                                        current_round_clone, total_scanned, rate
-                                    );
+                                    // 降级为连接扫描
+                                    let config = service::ConScannerConfig {
+                                        timeout_ms: args.timeout,
+                                        concurrent_limit: args.concurrency,
+                                        result_buffer: args.result_buffer,
+                                        db_batch_size: args.db_batch_size,
+                                        flush_interval_ms: args.flush_interval_ms,
+                                        max_rate: args.max_rate,
+                                        rate_window_secs: args.rate_window_secs,
+                                    };
+                                    let scanner =
+                                        ConScanner::new(db.clone(), current_round, config);
+                                    scanner
+                                        .run_pipeline(rx, ports.clone(), move |total_scanned| {
+                                            if total_scanned % 1000 == 0 {
+                                                let elapsed = start_time.elapsed().as_secs_f64();
+                                                let rate = total_scanned as f64 / elapsed;
+                                                info!(
+                                                    "IPv4 Progress [R{}]: {} IPs - {:.2} IPs/sec",
+                                                    current_round_clone, total_scanned, rate
+                                                );
+                                            }
+                                        })
+                                        .await?;
+                                    scanner.get_metrics().clone()
                                 }
-                            })
-                            .await?;
-                        scanner.get_metrics().clone()
-                    };
+                            }
+                        } else {
+                            // Connect Scan Mode
+                            let config = service::ConScannerConfig {
+                                timeout_ms: args.timeout,
+                                concurrent_limit: args.concurrency,
+                                result_buffer: args.result_buffer,
+                                db_batch_size: args.db_batch_size,
+                                flush_interval_ms: args.flush_interval_ms,
+                                max_rate: args.max_rate,
+                                rate_window_secs: args.rate_window_secs,
+                            };
+                            let scanner = ConScanner::new(db.clone(), current_round, config);
+                            scanner
+                                .run_pipeline(rx, ports.clone(), move |total_scanned| {
+                                    if total_scanned % 1000 == 0 {
+                                        let elapsed = start_time.elapsed().as_secs_f64();
+                                        let rate = total_scanned as f64 / elapsed;
+                                        info!(
+                                            "IPv4 Progress [R{}]: {} IPs - {:.2} IPs/sec",
+                                            current_round_clone, total_scanned, rate
+                                        );
+                                    }
+                                })
+                                .await?;
+                            scanner.get_metrics().clone()
+                        };
 
-                    // Wait for producer
-                    let _ = producer.await;
+                        // Wait for producer
+                        let _ = producer.await;
 
-                    let total_processed = metrics.get_scanned();
-                    info!(
-                        "IPv4 scan completed: {} IPs in {:.2}s ({:.2} IPs/sec)",
-                        total_processed,
-                        start_time.elapsed().as_secs_f64(),
-                        total_processed as f64 / start_time.elapsed().as_secs_f64()
-                    );
-                    metrics.print_summary();
+                        let total_processed = metrics.get_scanned();
+                        info!(
+                            "IPv4 scan completed: {} IPs in {:.2}s ({:.2} IPs/sec)",
+                            total_processed,
+                            start_time.elapsed().as_secs_f64(),
+                            total_processed as f64 / start_time.elapsed().as_secs_f64()
+                        );
+                        metrics.print_summary();
 
-                    // Clear resume IP since IPv4 scan is complete
-                    if resume_ip_type.as_deref() == Some("IPv4") {
-                        info!("IPv4 scan complete, clearing resume state");
-                        resume_ip = None;
-                        resume_ip_type = None;
-                    }
+                        // Clear resume IP since IPv4 scan is complete
+                        if resume_ip_type.as_deref() == Some("IPv4") {
+                            info!("IPv4 scan complete, clearing resume state");
+                            resume_ip = None;
+                            resume_ip_type = None;
+                        }
+                    } // end if !ran_raw
                 }
                 Err(e) => error!("Failed to create IPv4 range: {}", e),
             }

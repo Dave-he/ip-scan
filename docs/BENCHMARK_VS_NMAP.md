@@ -11,7 +11,7 @@ Test environment:
   - `1-1024` — full unprivileged TCP range
 - **Per-tool settings** (matched for fairness):
   - `nmap`: `-sT -Pn -n --max-rtt-timeout 300ms --max-retries 0 --host-timeout 30s`
-  - `ip-scan`: `--config bench/ipscan.toml` → `concurrency=4096, max_rate=1_000_000, timeout=300ms, only_store_open=true`
+  - `ip-scan`: `--config bench/ipscan.toml` → `concurrency=4096, max_rate=0 (unlimited), timeout=300ms, only_store_open=true`
 - **Trials**: 3 per scenario
 
 ## Per-scenario results
@@ -22,50 +22,50 @@ All numbers in **seconds** (lower is better). RSS in **KiB**.
 
 | tool | trial | wall (s) | RSS (KiB) | opens |
 |------|------:|---------:|----------:|------:|
-| ip-scan | 1 | 4.517 | 26,451,968 | 0 |
-| ip-scan | 2 | 88.280 | 25,083,904 | 0 |
-| ip-scan | 3 | 5.225 | 26,755,072 | 0 |
-| nmap | 1 | 154.285 | 7,602,176 | 0 |
-| nmap | 2 | 122.698 | 7,614,464 | 0 |
-| nmap | 3 | 128.629 | 7,593,984 | 0 |
+| ip-scan | 1 | 4.525 | 48,463,872 | 0 |
+| ip-scan | 2 | 4.611 | 48,566,272 | 0 |
+| ip-scan | 3 | 4.946 | 46,010,368 | 0 |
+| nmap | 1 | 201.620 | 7,602,176 | 0 |
+| nmap | 2 | 201.785 | 7,618,560 | 0 |
+| nmap | 3 | 104.493 | 7,585,792 | 0 |
 
-**median** ip-scan = 5.225s, nmap = 128.629s → **24.6× faster**
+**median** ip-scan = 4.611s, nmap = 201.620s → **43.7× faster**
 
 ### `top100`
 
 | tool | trial | wall (s) | RSS (KiB) | opens |
 |------|------:|---------:|----------:|------:|
-| ip-scan | 1 | 3.426 | 24,690,688 | 5 |
-| ip-scan | 2 | 1.768 | 11,350,016 | 0 |
-| ip-scan | 3 | 0.709 | 11,419,648 | 0 |
-| nmap | 1 | 77.813 | 6,692,864 | 0 |
-| nmap | 2 | 74.713 | 6,688,768 | 0 |
-| nmap | 3 | 74.254 | 6,680,576 | 0 |
+| ip-scan | 1 | 2.978 | 30,957,568 | 5 |
+| ip-scan | 2 | 1.043 | 12,136,448 | 0 |
+| ip-scan | 3 | 0.678 | 12,165,120 | 0 |
+| nmap | 1 | 104.962 | 6,647,808 | 0 |
+| nmap | 2 | 77.875 | 6,660,096 | 0 |
+| nmap | 3 | 168.877 | 6,696,960 | 0 |
 
-**median** ip-scan = 1.768s, nmap = 74.713s → **42.3× faster**
+**median** ip-scan = 1.043s, nmap = 104.962s → **100.6× faster**
 
 ### `top1000`
 
 | tool | trial | wall (s) | RSS (KiB) | opens |
 |------|------:|---------:|----------:|------:|
-| ip-scan | 1 | 4.490 | 26,464,256 | 0 |
-| ip-scan | 2 | 5.694 | 26,779,648 | 0 |
-| ip-scan | 3 | 5.061 | 26,361,856 | 0 |
-| nmap | 1 | 117.000 | 7,651,328 | 0 |
-| nmap | 2 | 88.659 | 7,622,656 | 0 |
-| nmap | 3 | 172.641 | 7,630,848 | 0 |
+| ip-scan | 1 | 4.475 | 47,280,128 | 0 |
+| ip-scan | 2 | 4.439 | 49,434,624 | 0 |
+| ip-scan | 3 | 4.424 | 46,350,336 | 0 |
+| nmap | 1 | 176.796 | 7,614,464 | 0 |
+| nmap | 2 | 77.278 | 7,643,136 | 0 |
+| nmap | 3 | 88.524 | 7,647,232 | 0 |
 
-**median** ip-scan = 5.061s, nmap = 117.000s → **23.1× faster**
+**median** ip-scan = 4.439s, nmap = 88.524s → **19.9× faster**
 
 ## Overall summary
 
 | scenario | ip-scan p50 (s) | nmap p50 (s) | speedup |
 |----------|----------------:|-------------:|--------:|
-| `1-1024` | 5.225 | 128.629 | **24.6×** |
-| `top100` | 1.768 | 74.713 | **42.3×** |
-| `top1000` | 5.061 | 117.000 | **23.1×** |
+| `1-1024` | 4.611 | 201.620 | **43.7×** |
+| `top100` | 1.043 | 104.962 | **100.6×** |
+| `top1000` | 4.439 | 88.524 | **19.9×** |
 
-**Geometric mean speedup across all scenarios: 28.9×**
+**Geometric mean speedup across all scenarios: 44.4×**
 
 ## How to reproduce
 

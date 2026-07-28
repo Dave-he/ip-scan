@@ -67,7 +67,7 @@ def render(rows):
     out.append("  - `1-1024` — full unprivileged TCP range")
     out.append("- **Per-tool settings** (matched for fairness):")
     out.append("  - `nmap`: `-sT -Pn -n --max-rtt-timeout 300ms --max-retries 0 --host-timeout 30s`")
-    out.append("  - `ip-scan`: `--config bench/ipscan.toml` → `concurrency=4096, max_rate=1_000_000, timeout=300ms, only_store_open=true`")
+    out.append("  - `ip-scan`: `--config bench/ipscan.toml` → `concurrency=4096, max_rate=0 (unlimited), timeout=300ms, only_store_open=true`")
     out.append("- **Trials**: 3 per scenario")
     out.append("")
     out.append("## Per-scenario results")

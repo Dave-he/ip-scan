@@ -97,12 +97,14 @@ for sc in "${SCENARIOS[@]}"; do
       if [ "$tool" = "ip-scan" ]; then
         opens=$(grep -c "Found open port" "$out" 2>/dev/null || echo 0)
       else
-        opens=$(awk '/^[0-9]+\/tcp[[:space:]]+open/ {n++} END{print n+0}' "$out")
+        opens=$(awk '/^[0-9]+\/tcp[[:space:]]+open/ {n++} END{print n+0}' "$out" | tr -d '\n')
       fi
-      cmd=$(tail -1 "$rawlog" | sed 's/^[[:space:]]*//')
-      printf "%s,%s,%s,%s,%s,%s,\"%s\"\n" \
+      cmd=$(tail -1 "$rawlog" | sed 's/^[[:space:]]*//' | tr -d '\n')
+      opens=$(printf '%d' "$opens" 2>/dev/null || echo 0)
+      rss=$(printf '%d' "$rss" 2>/dev/null || echo 0)
+      printf "%s,%s,%s,%.3f,%d,%d,\"%s\"\n" \
         "$name" "$t" "$tool" "$wall" "$rss" "$opens" "$cmd" >> "$RES"
-      printf "  %-8s t%d %-7s wall=%6.3fs rss=%7sKiB opens=%3d\n" \
+      printf "  %-8s t%d %-7s wall=%6.3fs rss=%7dKiB opens=%3d\n" \
         "$name" "$t" "$tool" "$wall" "$rss" "$opens"
     done
   done
