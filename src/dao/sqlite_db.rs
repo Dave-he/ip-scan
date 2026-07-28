@@ -1,5 +1,5 @@
 use crate::model::{
-    index_to_ipv4, ipv4_to_index, IpGeoInfo, IpServiceSummary, PortBitmap, ServiceInfo,
+    index_to_ipv4, ipv4_to_index, IpGeoInfo, IpServiceSummary, PortBitmap, ServiceInfo, TcpSnapshot,
 };
 use anyhow::Result;
 use chrono::Utc;
@@ -12,6 +12,12 @@ use utoipa::ToSchema;
 #[derive(Clone)]
 pub struct SqliteDB {
     conn: Arc<Mutex<Connection>>,
+    writer_tx: flume::Sender<WriteRequest>,
+}
+
+enum WriteRequest {
+    BulkUpdatePortStatus(Vec<(String, u16, bool)>, i64),
+    Shutdown,
 }
 
 impl SqliteDB {
@@ -147,6 +153,48 @@ impl SqliteDB {
             [],
         )?;
 
+        // TCP protocol snapshot table — captures both raw and parsed first
+        // bytes for each open port. Drives the "what is this port doing?"
+        // view in the Web UI and lets analysts correlate banners with the
+        // site that emitted them.
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS tcp_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ip_address TEXT NOT NULL,
+                port INTEGER NOT NULL,
+                protocol TEXT NOT NULL DEFAULT '',
+                banner_first_line TEXT,
+                banner_raw_hex TEXT,
+                banner_raw_len INTEGER DEFAULT 0,
+                http_status INTEGER,
+                http_server TEXT,
+                http_title TEXT,
+                tls_subject TEXT,
+                tls_issuer TEXT,
+                tls_version TEXT,
+                tls_san TEXT,
+                tls_not_before TEXT,
+                tls_not_after TEXT,
+                os_guess TEXT,
+                rtt_ms REAL,
+                detected_technologies TEXT,
+                purpose TEXT,
+                captured_at TEXT NOT NULL,
+                UNIQUE(ip_address, port)
+            )",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tcp_snapshots_ip ON tcp_snapshots(ip_address)",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tcp_snapshots_purpose ON tcp_snapshots(purpose)",
+            [],
+        )?;
+
         // Migrations for existing databases
         let migrations = [
             "ALTER TABLE ip_details ADD COLUMN reverse_dns TEXT",
@@ -158,6 +206,34 @@ impl SqliteDB {
             "ALTER TABLE service_info ADD COLUMN http_security_headers TEXT",
             "ALTER TABLE service_info ADD COLUMN rtt_ms REAL",
             "ALTER TABLE service_info ADD COLUMN os_guess TEXT",
+            // tcp_snapshots is a fresh table, but include a no-op migration
+            // row so existing DBs upgrade with the same loop and the schema
+            // stays in lockstep. CREATE IF NOT EXISTS is a no-op when the
+            // table already exists.
+            "CREATE TABLE IF NOT EXISTS tcp_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ip_address TEXT NOT NULL,
+                port INTEGER NOT NULL,
+                protocol TEXT NOT NULL DEFAULT '',
+                banner_first_line TEXT,
+                banner_raw_hex TEXT,
+                banner_raw_len INTEGER DEFAULT 0,
+                http_status INTEGER,
+                http_server TEXT,
+                http_title TEXT,
+                tls_subject TEXT,
+                tls_issuer TEXT,
+                tls_version TEXT,
+                tls_san TEXT,
+                tls_not_before TEXT,
+                tls_not_after TEXT,
+                os_guess TEXT,
+                rtt_ms REAL,
+                detected_technologies TEXT,
+                purpose TEXT,
+                captured_at TEXT NOT NULL,
+                UNIQUE(ip_address, port)
+            )",
         ];
         for m in &migrations {
             let _ = conn.execute(m, []);
@@ -182,9 +258,120 @@ impl SqliteDB {
         conn.pragma_update(None, "journal_size_limit", 64 * 1024 * 1024i64)?;
         let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
 
+        // Create writer connection (separate from reader for WAL concurrency)
+        let writer_conn = Connection::open(db_path)?;
+        writer_conn.pragma_update(None, "journal_mode", "WAL")?;
+        writer_conn.pragma_update(None, "synchronous", "NORMAL")?;
+        writer_conn.busy_timeout(Duration::from_secs(5))?;
+        writer_conn.pragma_update(None, "cache_size", -64 * 1024i64)?;
+        writer_conn.pragma_update(None, "temp_store", "MEMORY")?;
+
+        let (writer_tx, writer_rx) = flume::bounded::<WriteRequest>(256);
+
+        std::thread::spawn(move || {
+            while let Ok(req) = writer_rx.recv() {
+                match req {
+                    WriteRequest::BulkUpdatePortStatus(updates, scan_round) => {
+                        if let Err(e) = Self::do_bulk_update_port_status(
+                            &writer_conn,
+                            updates,
+                            scan_round,
+                        ) {
+                            tracing::error!("DB writer failed: {}", e);
+                        }
+                    }
+                    WriteRequest::Shutdown => break,
+                }
+            }
+        });
+
         Ok(SqliteDB {
             conn: Arc::new(Mutex::new(conn)),
+            writer_tx,
         })
+    }
+
+    /// Internal implementation of bulk_update_port_status, run on the writer thread.
+    fn do_bulk_update_port_status(
+        conn: &Connection,
+        updates: Vec<(String, u16, bool)>,
+        scan_round: i64,
+    ) -> Result<()> {
+        if updates.is_empty() {
+            return Ok(());
+        }
+
+        let transaction = conn.transaction()?;
+
+        let mut updates_by_port: HashMap<u16, Vec<(u32, bool, String)>> = HashMap::new();
+
+        for (ip, port, is_open) in updates {
+            match ipv4_to_index(&ip) {
+                Ok(ip_index) => {
+                    updates_by_port
+                        .entry(port)
+                        .or_default()
+                        .push((ip_index, is_open, ip));
+                }
+                Err(_) => continue,
+            }
+        }
+
+        for (port, items) in &updates_by_port {
+            let mut bitmap = Self::get_port_bitmap_internal_conn(conn, *port, "IPv4", scan_round)?;
+
+            for (ip_index, is_open, _) in items {
+                bitmap.set(*ip_index, *is_open);
+            }
+
+            let blob = bitmap.to_blob()?;
+            let open_count = bitmap.count_ones() as i64;
+            let timestamp = Utc::now().to_rfc3339();
+
+            transaction.execute(
+                "INSERT INTO port_bitmaps (port, ip_type, scan_round, bitmap, open_count, last_updated)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT(port, ip_type, scan_round)
+                 DO UPDATE SET bitmap = ?4, open_count = ?5, last_updated = ?6",
+                params![port, "IPv4", scan_round, blob, open_count, timestamp],
+            )?;
+
+            let mut stmt = transaction.prepare(
+                "INSERT INTO open_ports_detail (ip_address, ip_type, port, scan_round, first_seen, last_seen)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT(ip_address, port)
+                 DO UPDATE SET scan_round = ?4, last_seen = ?6"
+            )?;
+
+            for (_, is_open, ip) in items {
+                if *is_open {
+                    let now = Utc::now().to_rfc3339();
+                    stmt.execute(params![ip, "IPv4", port, scan_round, now.clone(), now])?;
+                }
+            }
+        }
+
+        transaction.commit()?;
+        Ok(())
+    }
+
+    fn get_port_bitmap_internal_conn(
+        conn: &Connection,
+        port: u16,
+        ip_type: &str,
+        scan_round: i64,
+    ) -> Result<PortBitmap> {
+        let result: rusqlite::Result<Vec<u8>> = conn.query_row(
+            "SELECT bitmap FROM port_bitmaps WHERE port = ?1 AND ip_type = ?2 AND scan_round = ?3",
+            params![port, ip_type, scan_round],
+            |row| row.get(0),
+        );
+
+        match result {
+            Ok(blob) => PortBitmap::from_blob(&blob),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(PortBitmap::new()),
+            Err(e) => Err(e.into()),
+        }
     }
 
     /// Trigger a passive WAL checkpoint. Returns true when the WAL was fully
@@ -352,65 +539,9 @@ impl SqliteDB {
             return Ok(());
         }
 
-        let mut conn = self.conn.lock().unwrap();
-        let transaction = conn.transaction()?;
-
-        // Group by port to minimize bitmap loads/saves
-        let mut updates_by_port: HashMap<u16, Vec<(u32, bool, String)>> = HashMap::new();
-
-        for (ip, port, is_open) in updates {
-            match ipv4_to_index(&ip) {
-                Ok(ip_index) => {
-                    updates_by_port
-                        .entry(port)
-                        .or_default()
-                        .push((ip_index, is_open, ip));
-                }
-                Err(_) => continue, // Skip invalid IPs
-            }
-        }
-
-        for (port, items) in updates_by_port {
-            // 1. Update Bitmap
-            let mut bitmap =
-                self.get_port_bitmap_internal(&transaction, port, "IPv4", scan_round)?;
-
-            for (ip_index, is_open, _) in &items {
-                bitmap.set(*ip_index, *is_open);
-            }
-
-            let blob = bitmap.to_blob()?;
-            let open_count = bitmap.count_ones() as i64;
-            let timestamp = Utc::now().to_rfc3339();
-
-            transaction.execute(
-                "INSERT INTO port_bitmaps (port, ip_type, scan_round, bitmap, open_count, last_updated)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-                 ON CONFLICT(port, ip_type, scan_round)
-                 DO UPDATE SET bitmap = ?4, open_count = ?5, last_updated = ?6",
-                params![port, "IPv4", scan_round, blob, open_count, timestamp],
-            )?;
-
-            // 2. Update Details (Only for open ports)
-            // Prepare statement for better performance
-            {
-                let mut stmt = transaction.prepare(
-                    "INSERT INTO open_ports_detail (ip_address, ip_type, port, scan_round, first_seen, last_seen)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-                     ON CONFLICT(ip_address, port)
-                     DO UPDATE SET scan_round = ?4, last_seen = ?6"
-                )?;
-
-                for (_, is_open, ip) in &items {
-                    if *is_open {
-                        let now = Utc::now().to_rfc3339();
-                        stmt.execute(params![ip, "IPv4", port, scan_round, now.clone(), now])?;
-                    }
-                }
-            }
-        }
-
-        transaction.commit()?;
+        self.writer_tx
+            .try_send(WriteRequest::BulkUpdatePortStatus(updates, scan_round))
+            .map_err(|e| anyhow::anyhow!("DB writer channel full: {}", e))?;
         Ok(())
     }
 
@@ -866,6 +997,90 @@ impl SqliteDB {
         }
         tx.commit()?;
         Ok(())
+    }
+
+    /// Persist a batch of TCP protocol snapshots in one transaction. Mirrors
+    /// `save_service_info_batch` so the Web UI can join the two tables on
+    /// `(ip_address, port)`.
+    pub fn save_tcp_snapshots_batch(&self, snapshots: &[TcpSnapshot]) -> Result<()> {
+        if snapshots.is_empty() {
+            return Ok(());
+        }
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO tcp_snapshots (ip_address, port, protocol, banner_first_line, banner_raw_hex, banner_raw_len, http_status, http_server, http_title, tls_subject, tls_issuer, tls_version, tls_san, tls_not_before, tls_not_after, os_guess, rtt_ms, detected_technologies, purpose, captured_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
+                 ON CONFLICT(ip_address, port)
+                 DO UPDATE SET protocol=?3, banner_first_line=?4, banner_raw_hex=?5, banner_raw_len=?6, http_status=?7, http_server=?8, http_title=?9, tls_subject=?10, tls_issuer=?11, tls_version=?12, tls_san=?13, tls_not_before=?14, tls_not_after=?15, os_guess=?16, rtt_ms=?17, detected_technologies=?18, purpose=?19, captured_at=?20",
+            )?;
+            for snap in snapshots {
+                stmt.execute(params![
+                    snap.ip,
+                    snap.port,
+                    snap.protocol,
+                    snap.banner_first_line,
+                    snap.banner_raw_hex,
+                    snap.banner_raw_len as i64,
+                    snap.http_status.map(|v| v as i64),
+                    snap.http_server,
+                    snap.http_title,
+                    snap.tls_subject,
+                    snap.tls_issuer,
+                    snap.tls_version,
+                    snap.tls_san,
+                    snap.tls_not_before,
+                    snap.tls_not_after,
+                    snap.os_guess,
+                    snap.rtt_ms,
+                    snap.detected_technologies,
+                    snap.purpose,
+                    snap.captured_at,
+                ])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    pub fn get_tcp_snapshots_by_ip(&self, ip: &str) -> Result<Vec<TcpSnapshot>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT ip_address, port, protocol, banner_first_line, banner_raw_hex, banner_raw_len,
+                    http_status, http_server, http_title, tls_subject, tls_issuer, tls_version,
+                    tls_san, tls_not_before, tls_not_after, os_guess, rtt_ms,
+                    detected_technologies, purpose, captured_at
+             FROM tcp_snapshots WHERE ip_address = ?1 ORDER BY port",
+        )?;
+        let results = stmt
+            .query_map([ip], |row| {
+                Ok(TcpSnapshot {
+                    ip: row.get(0)?,
+                    port: row.get(1)?,
+                    protocol: row.get(2)?,
+                    banner_first_line: row.get(3)?,
+                    banner_raw_hex: row.get(4)?,
+                    banner_raw_len: row.get::<_, i64>(5)? as usize,
+                    http_status: row.get::<_, Option<i64>>(6)?.map(|v| v as u16),
+                    http_server: row.get(7)?,
+                    http_title: row.get(8)?,
+                    tls_subject: row.get(9)?,
+                    tls_issuer: row.get(10)?,
+                    tls_version: row.get(11)?,
+                    tls_san: row.get(12)?,
+                    tls_not_before: row.get(13)?,
+                    tls_not_after: row.get(14)?,
+                    os_guess: row.get(15)?,
+                    rtt_ms: row.get(16)?,
+                    detected_technologies: row.get(17)?,
+                    purpose: row.get(18)?,
+                    captured_at: row.get(19)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(results)
     }
 
     pub fn get_service_info_by_ip(&self, ip: &str) -> Result<Vec<ServiceInfo>> {

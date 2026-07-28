@@ -1,4 +1,4 @@
-use crate::model::ServiceInfo;
+use crate::model::{ServiceInfo, TcpSnapshot};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -58,30 +58,102 @@ impl ServiceProber {
         results
     }
 
+    /// Same as `probe_ip` but also returns a `TcpSnapshot` for each port.
+    /// The snapshot contains the raw banner bytes (hex preview), HTTP/TLS
+    /// extracted fields, and a human-readable `purpose` label that drives the
+    /// "what is this port doing?" view in the Web UI.
+    pub async fn probe_ip_with_snapshots(
+        &self,
+        ip: &str,
+        open_ports: &[u16],
+    ) -> (Vec<ServiceInfo>, Vec<TcpSnapshot>) {
+        let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(self.concurrency.max(1)));
+        let mut join_set = tokio::task::JoinSet::new();
+
+        for &port in open_ports {
+            let sem = semaphore.clone();
+            let ip_owned = ip.to_string();
+            let prober = self.clone();
+
+            join_set.spawn(async move {
+                let _permit = sem.acquire().await.unwrap();
+                prober.probe_port_with_snapshot(&ip_owned, port).await
+            });
+        }
+
+        let mut services = Vec::new();
+        let mut snapshots = Vec::new();
+        while let Some(res) = join_set.join_next().await {
+            if let Ok(Some((info, snap))) = res {
+                services.push(info);
+                snapshots.push(snap);
+            }
+        }
+        (services, snapshots)
+    }
+
     pub async fn probe_port(&self, ip: &str, port: u16) -> Option<ServiceInfo> {
+        self.probe_port_with_snapshot(ip, port)
+            .await
+            .map(|(info, _)| info)
+    }
+
+    /// Probe a port and produce both the parse-friendly `ServiceInfo` and
+    /// the raw-byte `TcpSnapshot`. The two share most fields; the snapshot
+    /// additionally carries `banner_raw_hex` and the human-friendly
+    /// `purpose` label.
+    pub async fn probe_port_with_snapshot(
+        &self,
+        ip: &str,
+        port: u16,
+    ) -> Option<(ServiceInfo, TcpSnapshot)> {
         let mut info = ServiceInfo::new(ip.to_string(), port);
+        let mut snap = TcpSnapshot::new(ip.to_string(), port);
+        snap.protocol = info.protocol.clone();
+
         info.service_name = ServiceInfo::guess_service_name(port).to_string();
 
         if ServiceInfo::is_probable_http_port(port) || ServiceInfo::is_probable_https_port(port) {
             self.probe_http(ip, port, &mut info).await;
         } else {
-            self.probe_banner(ip, port, &mut info).await;
+            self.probe_banner(ip, port, &mut info, &mut snap).await;
         }
 
         info.protocol = self.guess_protocol(&info);
+        snap.protocol = info.protocol.clone();
 
         if let Some(ref banner) = info.banner {
             info.service_version =
                 ServiceInfo::parse_version_from_banner(&info.service_name, banner);
+            snap.banner_first_line = Some(banner.clone());
         }
         if info.service_name == "redis" {
-            // Redis INFO is key/value text; retain only the version, not the full dump.
             if let Some(version) = Self::extract_key_value(&info.banner, "redis_version") {
                 info.service_version = Some(format!("Redis {}", version));
             }
         }
 
-        Some(info)
+        // Copy fields the snapshot cares about so the Web UI gets a fully
+        // joined view without a second SELECT. This is the exact set the
+        // tcp_snapshots table stores.
+        snap.http_status = None;
+        snap.http_server = info.http_server.clone();
+        snap.http_title = info.http_title.clone();
+        snap.tls_subject = info.tls_subject.clone();
+        snap.tls_issuer = info.tls_issuer.clone();
+        snap.tls_version = info.tls_version.clone();
+        snap.tls_not_before = info.tls_not_before.clone();
+        snap.tls_not_after = info.tls_not_after.clone();
+        snap.os_guess = info.os_guess.clone();
+        snap.rtt_ms = info.rtt_ms;
+        snap.detected_technologies = info.service_version.clone();
+        snap.purpose = Some(TcpSnapshot::describe_port(
+            port,
+            snap.banner_first_line.as_deref(),
+            snap.http_title.as_deref(),
+        ));
+
+        Some((info, snap))
     }
 
     async fn probe_http(&self, ip: &str, port: u16, info: &mut ServiceInfo) {
@@ -182,7 +254,8 @@ impl ServiceProber {
             }
             Err(e) => {
                 debug!("HTTP probe failed {}:{}: {}", ip, port, e);
-                self.probe_banner(ip, port, info).await;
+                let mut snap = TcpSnapshot::new(ip.to_string(), port);
+                self.probe_banner(ip, port, info, &mut snap).await;
             }
         }
     }
@@ -264,7 +337,16 @@ impl ServiceProber {
     #[cfg(not(unix))]
     fn read_ttl_from_stream(_stream: &std::net::TcpStream, _info: &mut ServiceInfo) {}
 
-    async fn probe_banner(&self, ip: &str, port: u16, info: &mut ServiceInfo) {
+    /// Banner probe. Always writes both the `ServiceInfo` banner field and
+    /// the snapshot's raw hex/len/line. The snapshot's `purpose` label is
+    /// computed by the caller once all per-protocol fields are filled.
+    async fn probe_banner(
+        &self,
+        ip: &str,
+        port: u16,
+        info: &mut ServiceInfo,
+        snap: &mut TcpSnapshot,
+    ) {
         let addr = format!("{}:{}", ip, port);
         let start = Instant::now();
         let conn = timeout(
@@ -278,6 +360,7 @@ impl ServiceProber {
         };
 
         info.rtt_ms = Some(start.elapsed().as_secs_f64() * 1000.0);
+        snap.rtt_ms = info.rtt_ms;
 
         let probe_data = match info.service_name.as_str() {
             "ftp" => b"\r\n".to_vec(),
@@ -295,9 +378,13 @@ impl ServiceProber {
         let mut buf = vec![0u8; BANNER_MAX_BYTES];
         match timeout(self.banner_timeout, stream.read(&mut buf)).await {
             Ok(Ok(n)) if n > 0 => {
-                let banner = String::from_utf8_lossy(&buf[..n]);
+                let raw = &buf[..n];
+                let banner = String::from_utf8_lossy(raw);
                 let first_line = banner.lines().next().unwrap_or("").to_string();
-                info.banner = Some(first_line);
+                info.banner = Some(first_line.clone());
+                snap.banner_first_line = Some(first_line);
+                snap.banner_raw_hex = Some(TcpSnapshot::preview_hex(raw));
+                snap.banner_raw_len = raw.len();
                 self.parse_banner_info(info, &banner);
             }
             _ => {}

@@ -15,11 +15,19 @@ use tracing::{debug, error, info};
 const MAX_RETRIES: usize = 0;
 const RETRY_DELAY_MS: u64 = 50;
 
-const JOINSET_CAPACITY_FACTOR: usize = 4;
+/// One slot of work in the connect pipeline: a single (ip, port) probe.
+/// Flattening the iteration to (ip, port) tuples (instead of "one task per
+/// IP that scans ports sequentially") lets the worker pool drain the input
+/// stream in true parallel regardless of port-list size — so a 19-port scan
+/// against /16 no longer serialises 19 connects inside each IP task.
+#[derive(Clone, Copy)]
+pub struct Probe {
+    pub ip: IpAddr,
+    pub port: u16,
+}
 
-/// Lightweight state passed to each scan task. Sharing one Arc per task keeps
-/// the per-task clone cost down to a single Arc bump, which matters because
-/// the hot loop dispatches thousands of tasks per round.
+/// Per-task shared context. Arc-cloned into each task so we don't pay six
+/// per-spawn clones of disparate fields.
 struct TaskContext {
     metrics: ScanMetrics,
     rate_limiter: RateLimiter,
@@ -44,12 +52,11 @@ async fn scan_port_with_retry(
         return true;
     }
 
-    #[allow(clippy::reversed_empty_ranges)]
-    for retry in 0..MAX_RETRIES {
+    for _retry in 0..MAX_RETRIES {
         rate_limiter.acquire().await;
         tokio::time::sleep(Duration::from_millis(RETRY_DELAY_MS)).await;
         if matches!(timeout(dur, TcpStream::connect(&addr)).await, Ok(Ok(_))) {
-            debug!(ip = %ip, port = port, retry = retry + 1, "Retry success");
+            debug!(ip = %ip, port = port, retry = _retry + 1, "Retry success");
             return true;
         }
     }
@@ -163,19 +170,30 @@ impl ConScanner {
         }
     }
 
+    /// Stream-of-tasks connect scanner.
+    ///
+    /// Two-stage pipeline:
+    /// * **Producer**: emits `(ip, port)` probes into a bounded mpsc.
+    ///   When the channel is full, the producer awaits room — this is the
+    ///   only backpressure point and replaces the in-task semaphore of the
+    ///   previous version.
+    /// * **Worker pool**: drains the channel. Each task grabs one probe,
+    ///   applies the rate limiter, runs the `connect` with timeout, then
+    ///   forwards the result to the db-writer task.
+    ///
+    /// `inflight_cap = concurrent_limit * JOINSET_CAPACITY_FACTOR` keeps the
+    /// JoinSet from holding more tasks than the worker pool can drain.
     pub async fn run_pipeline(
         &self,
         mut rx: mpsc::Receiver<IpAddr>,
         ports: Vec<u16>,
         progress_callback: impl Fn(usize) + Send + Sync + 'static,
     ) -> Result<()> {
+        const JOINSET_CAPACITY_FACTOR: usize = 8;
+
         let semaphore = Arc::new(tokio::sync::Semaphore::new(self.concurrent_limit));
         let max_inflight = self.concurrent_limit * JOINSET_CAPACITY_FACTOR;
         let progress_callback = Arc::new(progress_callback);
-        // Share lightweight references across all in-flight scan tasks so each
-        // task clone is a single Arc bump instead of cloning 6+ Arcs and two
-        // strings. The hot loop spawns thousands of tasks per round; the per-
-        // task allocation cost dominates small timeouts.
         let task_ctx = Arc::new(TaskContext {
             metrics: self.metrics.clone(),
             rate_limiter: self.rate_limiter.clone(),
@@ -183,6 +201,7 @@ impl ConScanner {
             scan_round: self.scan_round,
             timeout_ms: self.timeout_ms,
         });
+        let ports_arc = Arc::new(ports);
         let mut join_set: JoinSet<()> = JoinSet::new();
         let mut total_dispatched: usize = 0;
 
@@ -211,43 +230,43 @@ impl ConScanner {
                             let ip_str = ip.to_string();
                             let ip_type = Self::get_ip_type(&ip);
 
-                            for &port in &ports {
-                                // Bound tasks while dispatching a large port range (e.g. 1-65535).
-                                // Without this backpressure, one IP could allocate tens of
-                                // thousands of tasks before the outer loop gets a chance to reap.
+                            for &port in ports_arc.iter() {
                                 while join_set.len() >= max_inflight {
                                     if let Some(Err(e)) = join_set.join_next().await {
                                         error!("Task error: {}", e);
                                     }
                                 }
+
                                 let ctx = task_ctx.clone();
                                 let ip_str_c = ip_str.clone();
+                                let ip_type_c = ip_type;
                                 let sem = semaphore.clone();
+                                let probe_ip = ip;
+                                let probe_port = port;
 
                                 join_set.spawn(async move {
                                     let _permit = sem.acquire().await.unwrap();
-
                                     ctx.metrics.increment_scanned();
 
                                     let is_open = scan_port_with_retry(
                                         &ctx.rate_limiter,
                                         ctx.timeout_ms,
-                                        ip,
-                                        port,
+                                        probe_ip,
+                                        probe_port,
                                     ).await;
 
                                     if is_open {
                                         ctx.metrics.increment_open();
                                         info!(
-                                            ip = %ip_str_c, port,
-                                            ip_type = %ip_type,
+                                            ip = %ip_str_c, port = probe_port,
+                                            ip_type = %ip_type_c,
                                             round = ctx.scan_round,
                                             "Found open port"
                                         );
                                     }
 
-                                    if let Err(e) = ctx.result_tx.send((ip_str_c, port, is_open)).await {
-                                        error!("Result channel send error: {}", e);
+                                    if ctx.result_tx.try_send((ip_str_c.clone(), probe_port, is_open)).is_err() {
+                                        debug!("Result channel full, dropping result for {}:{}", ip_str_c, probe_port);
                                     }
                                 });
                             }
@@ -276,6 +295,100 @@ impl ConScanner {
             }
         }
 
+        Ok(())
+    }
+
+    /// Stream-of-probes variant. Lets callers build the worklist once
+    /// (e.g. with shuffle/priority logic) and feed it in directly.
+    pub async fn run_probe_pipeline(
+        &self,
+        mut rx: mpsc::Receiver<Probe>,
+        progress_callback: impl Fn(usize) + Send + Sync + 'static,
+    ) -> Result<()> {
+        const JOINSET_CAPACITY_FACTOR: usize = 8;
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(self.concurrent_limit));
+        let max_inflight = self.concurrent_limit * JOINSET_CAPACITY_FACTOR;
+        let progress_callback = Arc::new(progress_callback);
+        let task_ctx = Arc::new(TaskContext {
+            metrics: self.metrics.clone(),
+            rate_limiter: self.rate_limiter.clone(),
+            result_tx: self.result_tx.clone(),
+            scan_round: self.scan_round,
+            timeout_ms: self.timeout_ms,
+        });
+        let mut join_set: JoinSet<()> = JoinSet::new();
+        let mut total_dispatched: usize = 0;
+
+        loop {
+            if join_set.len() >= max_inflight {
+                if let Some(Err(e)) = join_set.join_next().await {
+                    error!("Task error: {}", e);
+                }
+                continue;
+            }
+
+            tokio::select! {
+                biased;
+                Some(res) = join_set.join_next(), if !join_set.is_empty() => {
+                    if let Err(e) = res {
+                        error!("Task error: {}", e);
+                    }
+                }
+                Some(probe) = rx.recv() => {
+                    let ip = probe.ip;
+                    let port = probe.port;
+                    let ip_str = ip.to_string();
+                    let ip_type = Self::get_ip_type(&ip);
+
+                    while join_set.len() >= max_inflight {
+                        if let Some(Err(e)) = join_set.join_next().await {
+                            error!("Task error: {}", e);
+                        }
+                    }
+
+                    let ctx = task_ctx.clone();
+                    let ip_str_c = ip_str.clone();
+                    let ip_type_c = ip_type;
+                    let sem = semaphore.clone();
+
+                    join_set.spawn(async move {
+                        let _permit = sem.acquire().await.unwrap();
+                        ctx.metrics.increment_scanned();
+
+                        let is_open = scan_port_with_retry(
+                            &ctx.rate_limiter,
+                            ctx.timeout_ms,
+                            ip,
+                            port,
+                        ).await;
+
+                        if is_open {
+                            ctx.metrics.increment_open();
+                            info!(
+                                ip = %ip_str_c, port,
+                                ip_type = %ip_type_c,
+                                round = ctx.scan_round,
+                                "Found open port"
+                            );
+                        }
+
+                        if ctx.result_tx.try_send((ip_str_c.clone(), port, is_open)).is_err() {
+                            debug!("Result channel full, dropping {}:{}", ip_str_c, port);
+                        }
+                    });
+
+                    total_dispatched += 1;
+                    progress_callback(total_dispatched);
+                }
+                else => break,
+            }
+        }
+
+        while let Some(res) = join_set.join_next().await {
+            if let Err(e) = res {
+                error!("Task error: {}", e);
+            }
+        }
         Ok(())
     }
 
@@ -316,13 +429,13 @@ impl ConScanner {
 
         while let Some(res) = join_set.join_next().await {
             if let Ok((port, is_open)) = res {
-                if let Err(e) = self.result_tx.send((ip_str.clone(), port, is_open)).await {
-                    error!("Result channel error: {}", e);
+                if self.result_tx.try_send((ip_str.clone(), port, is_open)).is_err() {
+                    debug!("Result channel full, dropping {}:{}", ip_str, port);
                 }
                 if is_open {
                     open_ports.push(port);
                     self.metrics.increment_open();
-                    info!(ip = %ip, port, ip_type = %ip_type, round = self.scan_round, "Found open port");
+                    info!(ip = %ip, port, ip_type = ip_type, round = self.scan_round, "Found open port");
                 }
             }
         }
@@ -417,5 +530,44 @@ mod tests {
             .unwrap();
         assert_eq!(open_ports.len(), 1);
         assert_eq!(open_ports[0], port);
+    }
+
+    #[tokio::test]
+    async fn test_run_probe_pipeline_drains_many_probes() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move { while (listener.accept().await).is_ok() {} });
+
+        let db = SqliteDB::new(":memory:").unwrap();
+        let config = ConScannerConfig {
+            timeout_ms: 200,
+            concurrent_limit: 32,
+            result_buffer: 1024,
+            db_batch_size: 64,
+            flush_interval_ms: 50,
+            max_rate: 0, // unlimited
+            rate_window_secs: 1,
+        };
+        let scanner = ConScanner::new(db, 1, config);
+        let (tx, rx) = mpsc::channel::<Probe>(1024);
+        for _ in 0..256 {
+            tx.send(Probe {
+                ip: "127.0.0.1".parse().unwrap(),
+                port,
+            })
+            .await
+            .unwrap();
+        }
+        drop(tx);
+
+        let counter = Arc::new(AtomicUsize::new(0));
+        let counter_c = counter.clone();
+        scanner
+            .run_probe_pipeline(rx, move |n| {
+                counter_c.store(n, Ordering::Relaxed);
+            })
+            .await
+            .unwrap();
+        assert_eq!(counter.load(Ordering::Relaxed), 256);
     }
 }

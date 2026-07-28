@@ -2,21 +2,23 @@
 
 ## 启动前预览
 
-使用 `--dry-run` 可以解析配置文件、目标、端口、并发和 enrichment 选项，而不会打开网络 socket 或创建数据库：
+使用 `--dry-run` 可以解析配置文件、目标、端口、并发和 enrichment 选项，**不会打开网络 socket 或创建数据库**：
 
 ```bash
 ip-scan --dry-run --target 192.168.1.0/24 --ports 22,80,443
+ip-scan --dry-run --target 10.0.0.0/24   --output-format json
 ```
 
-适合 CI 配置检查、容器启动探针和生产任务变更前确认。自动化脚本可增加 `--output-format json` 获取结构化计划。
+适合 CI 配置检查、容器启动探针和生产任务变更前确认。自动化脚本可加 `--output-format json` 获取结构化计划。
 
 ## 最小安全配置
 
 - 只扫描书面授权的网段。
 - 默认使用小网段、低并发、有限端口；公网任务显式确认后再运行。
 - API 不要直接暴露公网；生产环境绑定内网并通过认证反向代理保护。
-- `--probe-service` 会产生应用层请求，按目标方策略启用。
-- SYN 模式需要 root/admin；connect 模式适合无特权和本地测试。
+- `--probe-service` 会产生应用层请求（HTTP GET、TLS ClientHello、Banner 抓取），按目标方策略启用。
+- SYN 模式需要 root/admin；connect 模式适合无特权和本地测试；SYN 失败时会自动降级到 connect。
+- 私网/loopback/link-local 默认会被 `--skip-private` 跳过；公网任务请显式设置并控制 `--max-rate`。
 
 ## DNS 与外部请求
 
@@ -29,6 +31,7 @@ ip-scan --dry-run --target 192.168.1.0/24 --ports 22,80,443
 - `--round-delay-ms` 控制循环模式下两轮扫描的间隔（毫秒，默认 0）。固定子网循环扫描（`--loop-mode` 加上窄范围 IP）建议设置 1000–5000 毫秒，避免在每次轮询都打满同一段；扫描滑动窗口或全网段时可保持 0 让循环尽快推进。
 - GeoIP/WHOIS/DNS 使用独立 `--geo-concurrency`（默认 8），服务探测使用 `--probe-concurrency`；两者不要与扫描并发简单相加。
 - SQLite 使用 WAL；定期备份数据库。循环模式保留最新两个 bitmap 轮次，旧轮次删除后由 SQLite 复用空间，不在扫描热路径执行全库 `VACUUM`。
+- `--preset quick|standard|deep` 已包含经过验证的并发/超时/端口组合；不确定时优先使用预设，再按需微调。
 
 ## 监控
 
@@ -37,10 +40,11 @@ ip-scan --dry-run --target 192.168.1.0/24 --ports 22,80,443
 ## 故障排查
 
 1. 查看 `--verbose` 日志确认目标解析、超时和权限。
-2. SYN 失败时先切换 connect 模式验证网络，再检查 Npcap/root。
+2. SYN 失败时先切换 connect 模式验证网络，再检查 Npcap/root（Linux/macOS 需要 raw socket 权限，Windows 需要 Npcap SDK）。
 3. Geo 没有结果时检查 MaxMind 路径或关闭 `--no-geo` 以外的配置。
 4. 服务信息为空时确认端口开放、目标允许应用层握手，避免把超时误认为关闭。
 5. 使用 `cargo test --offline`、`cargo fmt --check` 验证构建健康。
+6. 服务探测始终为空但端口开放：检查 `service_probe_state` 的 `last_probe` 时间，距离上一次失败可能还在 1 小时退避窗口内。
 
 ## 依赖安全审计
 
@@ -59,3 +63,22 @@ cargo audit --no-fetch --stale
 ## 服务探测退避
 
 服务探测失败或返回空结果时会记录 `service_probe_state`，同一 IP 默认至少间隔一小时才会重试，避免不可达主机在后台轮询中持续消耗连接、超时和日志资源。发现新的开放服务后，仍会通过 `service_info` 的幂等记录继续处理。
+
+## 部署模板
+
+最小的一键部署（详细脚本见 [`AGENTS.md`](../AGENTS.md)）：
+
+```bash
+# 编译 musl static-pie（无动态依赖）
+cargo build --release --target x86_64-unknown-linux-musl
+
+# 打包并通过 screen 守护启动（断线后进程继续运行）
+tar czf /tmp/ip-scan-deploy.tar.gz \
+  -C target/x86_64-unknown-linux-musl/release ip-scan \
+  -C <repo> web config.toml
+
+# 远端启动
+ssh -p 2222 root@<SERVER> "screen -dmS scan bash -c './ip-scan --api --loop-mode --target ... > /tmp/scan.log 2>&1'"
+```
+
+容器部署见 [`docker-compose.yml`](../docker-compose.yml) 与 [`Dockerfile`](../Dockerfile)；反向代理模板见 [`nginx.conf`](../nginx.conf)。
