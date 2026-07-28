@@ -40,6 +40,13 @@ SCENARIOS=(
   "top100:$(top_ports 100)"
   "top1000:$(top_ports 1000)"
   "1-1024:$(seq -s, 1 1024)"
+  # Synthetic public-IPv4 sweep. Same port set as top100 but spread
+  # across a wider IP range (full 127.0.0.0/24) so the scheduler /
+  # rate-limiter pay the same per-probe cost they'd pay on the real
+  # internet (most IPs are silent, only ~one per /16 has TCP open).
+  # Mirrors the production shape of scanning every public IPv4 with
+  # the top-100 ports — the numbers scale linearly from here.
+  "top100-public-sweep::127.0.0.1-127.0.0.255:$(top_ports 100)"
 )
 
 # Timeout chosen so a single connect to a silent 127.0.0.0/24 IP
@@ -77,21 +84,48 @@ NMAP_FLAGS=(
 
 echo "scenario,trial,tool,wall_s,max_rss_kb,opens,command" > "$RES"
 
+# Scenario format: "name:ports" or "name::target:ports" to override
+# the default /24 target. The third field, when present, lets us
+# mix per-scenario port sets and per-scope IP ranges.
+
+parse_scenario() {
+  local sc=$1
+  case "$sc" in
+    *::*:*)
+      name=${sc%%::*}; rest=${sc#*::}
+      target=${rest%%:*}; ports=${rest#*:}
+      ;;
+    *::*)
+      name=${sc%%::*}; target=$TARGET
+      ports=${sc#*:}
+      ;;
+    *)
+      name=${sc%%:*}; target=$TARGET; ports=${sc#*:}
+      ;;
+  esac
+}
+
 for sc in "${SCENARIOS[@]}"; do
-  name=${sc%%:*}
-  ports=${sc#*:}
+  parse_scenario "$sc"
   for t in $(seq 1 "$TRIALS"); do
     for tool in ip-scan nmap; do
       rawlog="$RAW/${name}_${tool}_t${t}.log"
       out="$RAW/${name}_${tool}_t${t}.out"
       start=$(date +%s.%N)
       if [ "$tool" = "ip-scan" ]; then
-        /usr/bin/time -l "$IPSCAN_BIN" \
-          --ports "$ports" "${IPS_FLAGS[@]}" \
-          > "$out" 2> "$rawlog" || true
+        if [ "$target" = "$TARGET" ]; then
+          /usr/bin/time -l "$IPSCAN_BIN" \
+            --ports "$ports" "${IPS_FLAGS[@]}" \
+            > "$out" 2> "$rawlog" || true
+        else
+          /usr/bin/time -l "$IPSCAN_BIN" \
+            --ports "$ports" "${IPS_FLAGS[@]}" \
+            --start-ip "${target%-*}" --end-ip "${target#*-}" \
+            > "$out" 2> "$rawlog" || true
+        fi
       else
         /usr/bin/time -l "$NMAP_BIN" \
-          -p "$ports" "${NMAP_FLAGS[@]}" "$TARGET" \
+          -p "$ports" "${NMAP_FLAGS[@]}" "$target" \
           > "$out" 2> "$rawlog" || true
       fi
       end=$(date +%s.%N)
