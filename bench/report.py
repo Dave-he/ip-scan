@@ -50,7 +50,7 @@ def quantile(values, q):
 
 def render(rows):
     by_scen = defaultdict(lambda: {"ip-scan": [], "nmap": []})
-    for scen, _trial, tool, wall, rss, opens in rows:  # noqa: F841
+    for scen, _, tool, wall, rss, opens in rows:
         by_scen[scen][tool].append((float(wall), int(rss), int(opens)))
 
     out = []
