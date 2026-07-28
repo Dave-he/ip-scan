@@ -15,7 +15,7 @@ use tracing::{debug, error, info};
 const MAX_RETRIES: usize = 0;
 const RETRY_DELAY_MS: u64 = 50;
 
-const JOINSET_CAPACITY_FACTOR: usize = 8;
+const JOINSET_CAPACITY_FACTOR: usize = 16;
 
 /// Lightweight state passed to each scan task. Sharing one Arc per task keeps
 /// the per-task clone cost down to a single Arc bump, which matters because
