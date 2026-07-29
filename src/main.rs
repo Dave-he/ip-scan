@@ -369,8 +369,7 @@ async fn enrich_discovered_assets(
                     // Probe once, fill both tables: ServiceInfo for the API
                     // summaries, TcpSnapshot for the raw protocol view that
                     // answers "what is this port doing?".
-                    let (services, snapshots) =
-                        prober.probe_ip_with_snapshots(&ip, &ports).await;
+                    let (services, snapshots) = prober.probe_ip_with_snapshots(&ip, &ports).await;
                     db.save_service_info_batch(&services)?;
                     db.save_tcp_snapshots_batch(&snapshots)?;
                     Ok::<(), anyhow::Error>(())
@@ -765,10 +764,7 @@ fn write_nmap_outputs(db: &SqliteDB, args: &cli::Args) {
         &format!(
             "{} {}",
             std::env::args().next().unwrap_or_else(|| "ip-scan".into()),
-            std::env::args()
-                .skip(1)
-                .collect::<Vec<_>>()
-                .join(" ")
+            std::env::args().skip(1).collect::<Vec<_>>().join(" ")
         ),
         env!("CARGO_PKG_VERSION"),
     );

@@ -1,6 +1,5 @@
 use crate::model::{
-    index_to_ipv4, ipv4_to_index, IpGeoInfo, IpServiceSummary, PortBitmap, ServiceInfo,
-    TcpSnapshot,
+    index_to_ipv4, ipv4_to_index, IpGeoInfo, IpServiceSummary, PortBitmap, ServiceInfo, TcpSnapshot,
 };
 use anyhow::Result;
 use chrono::Utc;
@@ -396,9 +395,7 @@ impl SqliteDB {
         updates: Vec<(String, u16, bool)>,
         scan_round: i64,
     ) -> Result<()> {
-        let skip = self
-            .skip_bitmap
-            .load(std::sync::atomic::Ordering::Relaxed);
+        let skip = self.skip_bitmap.load(std::sync::atomic::Ordering::Relaxed);
         self.bulk_update_port_status_with_skip_bitmap(updates, scan_round, skip)
     }
 

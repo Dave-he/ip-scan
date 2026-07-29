@@ -164,7 +164,9 @@ impl ServiceProber {
             TcpStream::connect(&addr),
         )
         .await;
-        let Ok(Ok(mut stream)) = conn else { return; };
+        let Ok(Ok(mut stream)) = conn else {
+            return;
+        };
         info.rtt_ms = Some(start.elapsed().as_secs_f64() * 1000.0);
         snap.rtt_ms = info.rtt_ms;
 
@@ -791,8 +793,8 @@ fn find_byte_sequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::ServiceProber;
-    use crate::model::ServiceInfo;
     use crate::dao::SqliteDB;
+    use crate::model::ServiceInfo;
     use tokio::io::AsyncWriteExt;
     use tokio::net::TcpListener;
 
@@ -838,8 +840,8 @@ mod tests {
     /// leave the table empty at scan time.
     #[tokio::test]
     async fn snapshot_path_persists_purpose_label() {
-        use crate::model::TcpSnapshot;
         use crate::dao::SqliteDB;
+        use crate::model::TcpSnapshot;
         use std::time::{Duration, Instant};
 
         // Build the snapshot directly so the test does not depend on a
@@ -876,7 +878,11 @@ mod tests {
         // 2. The purpose label describes the SSH service.
         let snap = &snapshots[0];
         let purpose = snap.purpose.as_deref().unwrap_or("");
-        assert!(purpose.contains("SSH"), "purpose should describe SSH, got {:?}", purpose);
+        assert!(
+            purpose.contains("SSH"),
+            "purpose should describe SSH, got {:?}",
+            purpose
+        );
         assert!(snap.banner_raw_len > 0);
         assert!(snap.banner_raw_hex.is_some());
 

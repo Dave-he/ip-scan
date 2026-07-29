@@ -436,6 +436,7 @@ mod tests {
             nmap_sS: false,
             nmap_sT: false,
             nmap_sn: false,
+            nmap_Pn: false,
             nmap_sV: false,
             nmap_O: false,
             nmap_A: false,
