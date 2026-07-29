@@ -229,6 +229,11 @@ impl ScanController {
         args.concurrency = request.concurrency;
         args.syn = request.syn;
         args.skip_private = request.skip_private;
+        // The unified web console exposes a "启用服务探测" toggle in the scan
+        // form; honour it the same way the CLI --probe-service flag does.
+        if request.probe_service {
+            args.probe_service = true;
+        }
 
         // Validate arguments
         args.validate()?;
@@ -387,6 +392,7 @@ mod tests {
             concurrency: 10,
             syn: false,
             skip_private: false,
+            probe_service: false,
         };
 
         let base_args = Args {

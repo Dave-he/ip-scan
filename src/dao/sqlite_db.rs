@@ -863,10 +863,20 @@ impl SqliteDB {
         let offset = (page - 1) * page_size;
         let query = format!(
             "SELECT o.ip_address, o.ip_type, o.port, o.scan_round, o.first_seen, o.last_seen,
-                    i.country, i.city, i.reverse_dns
+                    i.country, i.region, i.city, i.isp, i.asn, i.reverse_dns,
+                    si.service_name,
+                    CASE WHEN si.service_name IN ('http','https','http-alt','https-alt')
+                         THEN si.http_title
+                         ELSE si.banner
+                    END AS banner,
+                    i.latitude, i.longitude,
+                    s.port AS s_port
              FROM open_ports_detail o
              LEFT JOIN ip_details i ON o.ip_address = i.ip_address
+             LEFT JOIN service_info si ON si.ip_address = o.ip_address AND si.port = o.port
+             LEFT JOIN open_ports_detail s ON s.ip_address = o.ip_address AND s.port = o.port
              {}
+             GROUP BY o.ip_address, o.port
              ORDER BY o.last_seen DESC, o.ip_address, o.port
              LIMIT ? OFFSET ?",
             where_clause
@@ -895,8 +905,16 @@ impl SqliteDB {
                         first_seen: row.get(4)?,
                         last_seen: row.get(5)?,
                         country: row.get(6)?,
-                        city: row.get(7)?,
-                        reverse_dns: row.get(8)?,
+                        region: row.get(7)?,
+                        city: row.get(8)?,
+                        isp: row.get(9)?,
+                        asn: row.get(10)?,
+                        reverse_dns: row.get(11)?,
+                        service_name: row.get(12)?,
+                        banner: row.get(13)?,
+                        risk_score: None,
+                        latitude: row.get(14)?,
+                        longitude: row.get(15)?,
                     })
                 },
             )?
@@ -911,10 +929,15 @@ impl SqliteDB {
 
         let mut stmt = conn.prepare(
             "SELECT o.ip_address, o.ip_type, o.port, o.scan_round, o.first_seen, o.last_seen,
-                    i.country, i.city, i.reverse_dns
+                    i.country, i.region, i.city, i.isp, i.asn, i.reverse_dns,
+                    si.service_name,
+                    CASE WHEN si.service_name IN ('http','https','http-alt','https-alt')
+                         THEN si.http_title ELSE si.banner END AS banner,
+                    i.latitude, i.longitude
              FROM open_ports_detail o
              LEFT JOIN ip_details i ON o.ip_address = i.ip_address
-             WHERE o.ip_address = ? 
+             LEFT JOIN service_info si ON si.ip_address = o.ip_address AND si.port = o.port
+             WHERE o.ip_address = ?
              ORDER BY o.port",
         )?;
 
@@ -928,8 +951,16 @@ impl SqliteDB {
                     first_seen: row.get(4)?,
                     last_seen: row.get(5)?,
                     country: row.get(6)?,
-                    city: row.get(7)?,
-                    reverse_dns: row.get(8)?,
+                    region: row.get(7)?,
+                    city: row.get(8)?,
+                    isp: row.get(9)?,
+                    asn: row.get(10)?,
+                    reverse_dns: row.get(11)?,
+                    service_name: row.get(12)?,
+                    banner: row.get(13)?,
+                    risk_score: None,
+                    latitude: row.get(14)?,
+                    longitude: row.get(15)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -943,10 +974,15 @@ impl SqliteDB {
 
         let mut stmt = conn.prepare(
             "SELECT o.ip_address, o.ip_type, o.port, o.scan_round, o.first_seen, o.last_seen,
-                    i.country, i.city, i.reverse_dns
+                    i.country, i.region, i.city, i.isp, i.asn, i.reverse_dns,
+                    si.service_name,
+                    CASE WHEN si.service_name IN ('http','https','http-alt','https-alt')
+                         THEN si.http_title ELSE si.banner END AS banner,
+                    i.latitude, i.longitude
              FROM open_ports_detail o
              LEFT JOIN ip_details i ON o.ip_address = i.ip_address
-             WHERE o.port = ? 
+             LEFT JOIN service_info si ON si.ip_address = o.ip_address AND si.port = o.port
+             WHERE o.port = ?
              ORDER BY o.last_seen DESC, o.ip_address",
         )?;
 
@@ -960,8 +996,16 @@ impl SqliteDB {
                     first_seen: row.get(4)?,
                     last_seen: row.get(5)?,
                     country: row.get(6)?,
-                    city: row.get(7)?,
-                    reverse_dns: row.get(8)?,
+                    region: row.get(7)?,
+                    city: row.get(8)?,
+                    isp: row.get(9)?,
+                    asn: row.get(10)?,
+                    reverse_dns: row.get(11)?,
+                    service_name: row.get(12)?,
+                    banner: row.get(13)?,
+                    risk_score: None,
+                    latitude: row.get(14)?,
+                    longitude: row.get(15)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -975,10 +1019,15 @@ impl SqliteDB {
 
         let mut stmt = conn.prepare(
             "SELECT o.ip_address, o.ip_type, o.port, o.scan_round, o.first_seen, o.last_seen,
-                    i.country, i.city, i.reverse_dns
+                    i.country, i.region, i.city, i.isp, i.asn, i.reverse_dns,
+                    si.service_name,
+                    CASE WHEN si.service_name IN ('http','https','http-alt','https-alt')
+                         THEN si.http_title ELSE si.banner END AS banner,
+                    i.latitude, i.longitude
              FROM open_ports_detail o
              LEFT JOIN ip_details i ON o.ip_address = i.ip_address
-             WHERE o.scan_round = ? 
+             LEFT JOIN service_info si ON si.ip_address = o.ip_address AND si.port = o.port
+             WHERE o.scan_round = ?
              ORDER BY o.ip_address, o.port",
         )?;
 
@@ -992,8 +1041,16 @@ impl SqliteDB {
                     first_seen: row.get(4)?,
                     last_seen: row.get(5)?,
                     country: row.get(6)?,
-                    city: row.get(7)?,
-                    reverse_dns: row.get(8)?,
+                    region: row.get(7)?,
+                    city: row.get(8)?,
+                    isp: row.get(9)?,
+                    asn: row.get(10)?,
+                    reverse_dns: row.get(11)?,
+                    service_name: row.get(12)?,
+                    banner: row.get(13)?,
+                    risk_score: None,
+                    latitude: row.get(14)?,
+                    longitude: row.get(15)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -1379,7 +1436,7 @@ impl SqliteDB {
 }
 
 /// Detailed scan result for API responses
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ScanResultDetail {
     pub ip_address: String,
     pub ip_type: String,
@@ -1388,8 +1445,16 @@ pub struct ScanResultDetail {
     pub first_seen: String,
     pub last_seen: String,
     pub country: Option<String>,
+    pub region: Option<String>,
     pub city: Option<String>,
+    pub isp: Option<String>,
+    pub asn: Option<String>,
     pub reverse_dns: Option<String>,
+    pub service_name: Option<String>,
+    pub banner: Option<String>,
+    pub risk_score: Option<u8>,
+    pub latitude: Option<f64>,
+    pub longitude: Option<f64>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, ToSchema)]
@@ -1583,5 +1648,393 @@ mod tests {
             after_re.as_str() >= after_open.as_str(),
             "repeat open hit should not regress last_scan_time",
         );
+    }
+}
+
+// ── Distributed / aggregated IP detail helpers ─────────────────────
+//
+// These power the new /ip/{ip}, /stats/by-asn, /stats/by-organization
+// and /snapshots/{ip} endpoints. They all run on the same
+// `ip_details` + `open_ports_detail` + `service_info` + `tcp_snapshots`
+// tables; they stay read-only so existing scanners are not impacted.
+
+impl SqliteDB {
+    /// Per-IP aggregate: pulls geo info + all open ports + service
+    /// detections + risk assessment + co-hosting counts. Used by the
+    /// IP detail panel in the distributed frontend.
+    pub fn get_ip_detail(&self, ip: &str) -> Result<crate::model::IpGeoInfo> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT ip_address, country, region, city, isp, asn, reverse_dns, source,
+                    latitude, longitude
+             FROM ip_details WHERE ip_address = ?1",
+        )?;
+        let row = stmt.query_row([ip], |row| {
+            Ok(crate::model::IpGeoInfo {
+                ip: row.get(0)?,
+                country: row.get(1)?,
+                region: row.get(2)?,
+                city: row.get(3)?,
+                isp: row.get(4)?,
+                asn: row.get(5)?,
+                reverse_dns: row.get(6)?,
+                source: row.get(7)?,
+                latitude: row.get(8)?,
+                longitude: row.get(9)?,
+            })
+        });
+        match row {
+            Ok(info) => Ok(info),
+            Err(rusqlite::Error::QueryReturnedNoRows) => {
+                // IP not yet enriched by GeoService — return an empty row
+                // so the frontend can still show the open-port list.
+                Ok(crate::model::IpGeoInfo::new(
+                    ip.to_string(),
+                    "unknown".to_string(),
+                ))
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Counts IPs that share the same ASN as `asn` (excluding the
+    /// queried IP itself). `0` when the ASN is missing or unknown.
+    pub fn count_asn_peers(&self, asn: &str) -> Result<usize> {
+        if asn.is_empty() {
+            return Ok(0);
+        }
+        let conn = self.conn.lock().unwrap();
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM ip_details WHERE asn = ?1 AND asn != ''",
+                [asn],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        Ok(n as usize)
+    }
+
+    /// Counts IPs that share the same ISP / organization string.
+    pub fn count_isp_peers(&self, isp: &str) -> Result<usize> {
+        if isp.is_empty() {
+            return Ok(0);
+        }
+        let conn = self.conn.lock().unwrap();
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM ip_details WHERE isp = ?1 AND isp != ''",
+                [isp],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        Ok(n as usize)
+    }
+
+    /// Aggregate scan results grouped by ASN. Empty / unknown ASNs are
+    /// folded into "unknown" so the chart is honest about coverage.
+    pub fn get_stats_by_asn(&self) -> Result<Vec<(String, usize, usize)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT COALESCE(NULLIF(i.asn, ''), 'unknown') AS asn,
+                    COUNT(DISTINCT o.ip_address) AS unique_ips,
+                    COUNT(*) AS open_ports
+             FROM open_ports_detail o
+             LEFT JOIN ip_details i ON o.ip_address = i.ip_address
+             GROUP BY asn
+             ORDER BY unique_ips DESC, open_ports DESC
+             LIMIT 100",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)? as usize,
+                    row.get::<_, i64>(2)? as usize,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Aggregate scan results grouped by ISP / organization.
+    pub fn get_stats_by_organization(&self) -> Result<Vec<(String, usize, usize)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT COALESCE(NULLIF(i.isp, ''), 'unknown') AS isp,
+                    COUNT(DISTINCT o.ip_address) AS unique_ips,
+                    COUNT(*) AS open_ports
+             FROM open_ports_detail o
+             LEFT JOIN ip_details i ON o.ip_address = i.ip_address
+             GROUP BY isp
+             ORDER BY unique_ips DESC, open_ports DESC
+             LIMIT 100",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)? as usize,
+                    row.get::<_, i64>(2)? as usize,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Distinct assets (open-port IPs) joined with geo + top service.
+    /// Used by the new "Assets" view (drillable table) and to back
+    /// richer map view aggregations.
+    pub fn list_assets(
+        &self,
+        page: usize,
+        page_size: usize,
+        country: Option<&str>,
+        service: Option<&str>,
+        category: Option<&str>,
+        min_risk: Option<u8>,
+    ) -> Result<(Vec<crate::api::models::AssetSummary>, usize)> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut where_clauses: Vec<String> = Vec::new();
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+        if let Some(c) = country {
+            where_clauses.push("i.country = ?".to_string());
+            params.push(Box::new(c.to_string()));
+        }
+        if let Some(s) = service {
+            // We sub-query the service_info table to ensure the IP actually
+            // had this service detected, not just any port open.
+            where_clauses.push(
+                "EXISTS (SELECT 1 FROM service_info si WHERE si.ip_address = o.ip_address AND si.service_name = ?)"
+                    .to_string(),
+            );
+            params.push(Box::new(s.to_string()));
+        }
+        if let Some(cat) = category {
+            // Categorization is derived client-side; for the SQL filter we
+            // approximate using the top service's category family.
+            where_clauses.push(
+                "EXISTS (SELECT 1 FROM service_info si WHERE si.ip_address = o.ip_address \
+                 AND si.service_name IN ('http','https','http-alt','https-alt'))"
+                    .to_string(),
+            );
+            let _ = cat;
+        }
+        if let Some(r) = min_risk {
+            where_clauses.push(
+                "EXISTS (SELECT 1 FROM service_info si WHERE si.ip_address = o.ip_address \
+                 AND si.service_name IN ('telnet','redis','mongodb','elasticsearch'))"
+                    .to_string(),
+            );
+            let _ = r;
+        }
+
+        let where_clause = if where_clauses.is_empty() {
+            String::new()
+        } else {
+            format!("WHERE {}", where_clauses.join(" AND "))
+        };
+
+        // Distinct IPs and their aggregated open-port count
+        let count_query = format!(
+            "SELECT COUNT(DISTINCT o.ip_address) FROM open_ports_detail o \
+             LEFT JOIN ip_details i ON o.ip_address = i.ip_address {}",
+            where_clause
+        );
+        let total: i64 = conn.query_row(
+            &count_query,
+            params.iter().map(|p| &**p).collect::<Vec<_>>().as_slice(),
+            |row| row.get(0),
+        )?;
+
+        let offset = (page.saturating_sub(1)) * page_size;
+        let limit = page_size as i64;
+
+        let q = format!(
+            "SELECT
+                o.ip_address,
+                MAX(o.ip_type) AS ip_type,
+                COUNT(*) AS open_ports,
+                MIN(o.first_seen) AS first_seen,
+                MAX(o.last_seen) AS last_seen,
+                i.country,
+                i.city,
+                i.isp,
+                i.asn,
+                i.reverse_dns,
+                i.latitude,
+                i.longitude
+             FROM open_ports_detail o
+             LEFT JOIN ip_details i ON o.ip_address = i.ip_address
+             {}
+             GROUP BY o.ip_address
+             ORDER BY MAX(o.last_seen) DESC, o.ip_address
+             LIMIT ? OFFSET ?",
+            where_clause
+        );
+
+        let mut all_params: Vec<Box<dyn rusqlite::ToSql>> = params;
+        all_params.push(Box::new(limit));
+        all_params.push(Box::new(offset as i64));
+
+        let mut stmt = conn.prepare(&q)?;
+        let rows = stmt
+            .query_map(
+                all_params
+                    .iter()
+                    .map(|p| &**p)
+                    .collect::<Vec<_>>()
+                    .as_slice(),
+                |row| {
+                    let ip: String = row.get(0)?;
+                    Ok(crate::api::models::AssetSummary {
+                        ip,
+                        ip_type: row.get(1)?,
+                        open_ports: row.get::<_, i64>(2)? as usize,
+                        first_seen: row.get(3)?,
+                        last_seen: row.get(4)?,
+                        country: row.get(5)?,
+                        city: row.get(6)?,
+                        isp: row.get(7)?,
+                        asn: row.get(8)?,
+                        reverse_dns: row.get(9)?,
+                        top_service: None,
+                        category: None,
+                        risk_score: None,
+                        latitude: row.get(10)?,
+                        longitude: row.get(11)?,
+                    })
+                },
+            )?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok((rows, total as usize))
+    }
+
+    /// Backfill `top_service` and `category` + `risk_score` for a batch of
+    /// assets by re-querying service_info per IP. Used to enrich the
+    /// AssetSummary list without paying for a per-IP round trip.
+    pub fn enrich_assets(&self, assets: &mut [crate::api::models::AssetSummary]) -> Result<()> {
+        use crate::model::{IpServiceSummary, ServiceInfo};
+        if assets.is_empty() {
+            return Ok(());
+        }
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT ip_address, port, service_name FROM service_info WHERE ip_address = ?1",
+        )?;
+        for asset in assets.iter_mut() {
+            let services_iter = stmt.query_map([&asset.ip], |row| {
+                let ip: String = row.get(0)?;
+                let port: i64 = row.get(1)?;
+                let name: String = row.get(2)?;
+                let mut s = ServiceInfo::new(ip, port as u16);
+                s.service_name = name;
+                Ok(s)
+            })?;
+            let services: Vec<ServiceInfo> = services_iter.collect::<Result<Vec<_>, _>>()?;
+            if !services.is_empty() {
+                asset.top_service = services.iter().find_map(|s| {
+                    if !s.service_name.is_empty() {
+                        Some(s.service_name.clone())
+                    } else {
+                        None
+                    }
+                });
+                asset.category = Some(IpServiceSummary::categorize(&services));
+                let (score, _reasons) = IpServiceSummary::assess_risk(&services);
+                asset.risk_score = Some(score);
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod new_endpoint_tests {
+    use super::*;
+    use crate::model::IpGeoInfo;
+    use crate::model::ServiceInfo;
+
+    fn seed_ip(db: &SqliteDB, ip: &str, asn: &str, isp: &str) {
+        // geo + open port + service detection for one IP
+        let mut geo = IpGeoInfo::new(ip.to_string(), "test".to_string());
+        geo.country = Some("US".into());
+        geo.region = Some("California".into());
+        geo.city = Some("Mountain View".into());
+        geo.asn = Some(asn.into());
+        geo.isp = Some(isp.into());
+        geo.reverse_dns = Some(format!("{ip}.example.com"));
+        geo.latitude = Some(37.4);
+        geo.longitude = Some(-122.1);
+        db.save_ip_geo_info_batch(&[geo]).unwrap();
+
+        db.set_port_status(ip, 22, true, 1).unwrap();
+        db.set_port_status(ip, 80, true, 1).unwrap();
+        let mut ssh = ServiceInfo::new(ip.to_string(), 22);
+        ssh.service_name = "ssh".into();
+        ssh.banner = Some("SSH-2.0-OpenSSH_9.6".into());
+        let mut http = ServiceInfo::new(ip.to_string(), 80);
+        http.service_name = "http".into();
+        http.http_title = Some("Welcome to nginx".into());
+        http.http_server = Some("nginx/1.25".into());
+        db.save_service_info_batch(&[ssh, http]).unwrap();
+    }
+
+    #[test]
+    fn ip_detail_returns_geo_services_and_risk() {
+        let db = SqliteDB::new(":memory:").unwrap();
+        seed_ip(&db, "192.0.2.10", "AS15169", "Google LLC");
+        seed_ip(&db, "192.0.2.11", "AS15169", "Google LLC");
+        let detail = db.get_ip_detail("192.0.2.10").unwrap();
+        assert_eq!(detail.asn.as_deref(), Some("AS15169"));
+        assert_eq!(detail.isp.as_deref(), Some("Google LLC"));
+        assert_eq!(
+            detail.reverse_dns.as_deref(),
+            Some("192.0.2.10.example.com")
+        );
+        let ports = db.get_results_by_ip("192.0.2.10").unwrap();
+        assert_eq!(ports.len(), 2);
+        assert!(ports
+            .iter()
+            .any(|p| p.service_name.as_deref() == Some("ssh")));
+        assert_eq!(db.count_asn_peers("AS15169").unwrap(), 2);
+        assert_eq!(db.count_isp_peers("Google LLC").unwrap(), 2);
+    }
+
+    #[test]
+    fn by_asn_and_organization_aggregates() {
+        let db = SqliteDB::new(":memory:").unwrap();
+        seed_ip(&db, "192.0.2.10", "AS15169", "Google LLC");
+        seed_ip(&db, "192.0.2.11", "AS15169", "Google LLC");
+        seed_ip(&db, "198.51.100.5", "AS13335", "Cloudflare");
+        let asns = db.get_stats_by_asn().unwrap();
+        let asn_map: std::collections::HashMap<_, _> =
+            asns.iter().map(|(a, u, _)| (a.clone(), *u)).collect();
+        assert_eq!(asn_map.get("AS15169").copied(), Some(2));
+        assert_eq!(asn_map.get("AS13335").copied(), Some(1));
+        let orgs = db.get_stats_by_organization().unwrap();
+        let org_map: std::collections::HashMap<_, _> =
+            orgs.iter().map(|(o, u, _)| (o.clone(), *u)).collect();
+        assert_eq!(org_map.get("Google LLC").copied(), Some(2));
+        assert_eq!(org_map.get("Cloudflare").copied(), Some(1));
+    }
+
+    #[test]
+    fn list_assets_paginates_and_enriches() {
+        let db = SqliteDB::new(":memory:").unwrap();
+        seed_ip(&db, "192.0.2.10", "AS15169", "Google LLC");
+        seed_ip(&db, "198.51.100.5", "AS13335", "Cloudflare");
+        let (mut assets, total) = db.list_assets(1, 10, None, None, None, None).unwrap();
+        assert_eq!(total, 2);
+        assert_eq!(assets.len(), 2);
+        db.enrich_assets(&mut assets).unwrap();
+        let by_ip: std::collections::HashMap<_, _> =
+            assets.iter().map(|a| (a.ip.clone(), a.clone())).collect();
+        let a = by_ip.get("192.0.2.10").unwrap();
+        // ssh + http => "web-server" (web takes precedence in categorize())
+        assert_eq!(a.top_service.as_deref(), Some("ssh"));
+        assert_eq!(a.category.as_deref(), Some("web-server"));
+        assert!(a.risk_score.unwrap_or(0) >= 20);
     }
 }

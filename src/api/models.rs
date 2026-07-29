@@ -39,7 +39,7 @@ where
 }
 
 /// Scan result for a specific IP and port
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
 pub struct ScanResult {
     /// IP address
     pub ip_address: String,
@@ -63,13 +63,52 @@ pub struct ScanResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub country: Option<String>,
 
+    /// Region / subdivision (optional)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+
     /// City (optional)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub city: Option<String>,
 
+    /// ISP / organization (optional)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub isp: Option<String>,
+
+    /// ASN (optional)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub asn: Option<String>,
+
     /// Reverse DNS hostname (optional)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reverse_dns: Option<String>,
+
+    /// Top-level service name detected on this port (from service_info).
+    /// Empty when --probe-service wasn't enabled for this round.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_name: Option<String>,
+
+    /// Banner or HTTP title for this port (truncated, safe).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub banner: Option<String>,
+
+    /// Asset category derived from services on this IP
+    /// (`web-server`, `database-server`, `mail-server`, `linux-server`,
+    /// `remote-desktop`, `file-server`, `server`, `unknown`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+
+    /// Risk score for this (ip, port) pair, 0-100. `None` if no probe ran.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub risk_score: Option<u8>,
+
+    /// Latitude (optional, used by map view).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latitude: Option<f64>,
+
+    /// Longitude (optional, used by map view).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub longitude: Option<f64>,
 }
 
 /// Paginated response for scan results
@@ -264,6 +303,13 @@ pub struct StartScanRequest {
     /// Skip private IP ranges
     #[serde(default)]
     pub skip_private: bool,
+
+    /// Enable service-probe enrichment (Banner / HTTP / TLS metadata) for
+    /// newly discovered open ports. Mirrors the CLI --probe-service flag
+    /// and the unified web console's "启用服务探测" toggle. Defaults to false
+    /// so a request without the field behaves like before.
+    #[serde(default)]
+    pub probe_service: bool,
 }
 
 /// Export format
@@ -428,4 +474,176 @@ pub struct IpLocationsResponse {
     pub locations: Vec<IpLocationResponse>,
     pub total: usize,
     pub limit: usize,
+}
+
+/// Per-IP aggregate returned by `GET /api/v1/ip/{ip}`. Combines geo,
+/// open-port list, detected services and risk assessment so a single
+/// request drives the IP detail panel in the distributed frontend.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct IpDetailResponse {
+    pub ip: String,
+    pub ip_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub country: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub city: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub isp: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub asn: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reverse_dns: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latitude: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub longitude: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub geo_source: Option<String>,
+    pub first_seen: Option<String>,
+    pub last_seen: Option<String>,
+    pub open_ports: Vec<ScanResult>,
+    pub category: String,
+    pub risk_score: u8,
+    pub risk_reasons: Vec<String>,
+    /// Number of distinct IPs that share the same ASN as this one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub asn_peer_count: Option<usize>,
+    /// Number of distinct IPs hosted by the same ISP / organization.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub isp_peer_count: Option<usize>,
+}
+
+/// Aggregate stats grouped by ASN (e.g. `AS4134` -> unique IP count).
+/// Drives the ASN chart in the IP-family / map view.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct AsnStatsEntry {
+    pub asn: String,
+    pub unique_ips: usize,
+    pub open_ports: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct AsnStatsResponse {
+    pub asns: Vec<AsnStatsEntry>,
+    pub total_unique_ips: usize,
+}
+
+/// Aggregate stats grouped by ISP / organization.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct OrgStatsEntry {
+    pub isp: String,
+    pub unique_ips: usize,
+    pub open_ports: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct OrgStatsResponse {
+    pub organizations: Vec<OrgStatsEntry>,
+    pub total_unique_ips: usize,
+}
+
+/// Compact preview of an asset (single IP) for the IP-family / map views.
+/// Derived from the open_ports_detail + ip_details join.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct AssetSummary {
+    pub ip: String,
+    pub ip_type: String,
+    pub open_ports: usize,
+    pub first_seen: String,
+    pub last_seen: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub country: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub city: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub isp: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub asn: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reverse_dns: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_service: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub risk_score: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latitude: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub longitude: Option<f64>,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct AssetSummaryListResponse {
+    pub assets: Vec<AssetSummary>,
+    pub total: usize,
+    pub page: usize,
+    pub page_size: usize,
+    pub total_pages: usize,
+}
+
+/// Raw TCP snapshot for a single IP (truncated to a safe size). The
+/// frontend uses this to render banner previews, raw byte hex dumps and
+/// HTTP body previews for the IP detail panel.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct TcpSnapshotResponse {
+    pub ip: String,
+    pub port: u16,
+    pub protocol: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub banner_first_line: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub banner_raw_hex: Option<String>,
+    pub banner_raw_len: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http_status: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http_server: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http_title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls_subject: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls_issuer: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls_not_before: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls_not_after: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls_san: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub os_guess: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rtt_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detected_technologies: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub purpose: Option<String>,
+    pub captured_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct TcpSnapshotListResponse {
+    pub ip: String,
+    pub snapshots: Vec<TcpSnapshotResponse>,
+}
+/// Query parameters for the /assets endpoint.
+#[derive(Debug, serde::Deserialize, ToSchema, IntoParams)]
+pub struct AssetsQuery {
+    #[serde(default)]
+    pub page: Option<usize>,
+    #[serde(default)]
+    pub page_size: Option<usize>,
+    #[serde(default)]
+    pub country: Option<String>,
+    #[serde(default)]
+    pub service: Option<String>,
+    #[serde(default)]
+    pub category: Option<String>,
+    #[serde(default)]
+    pub min_risk: Option<u8>,
 }

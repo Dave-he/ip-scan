@@ -106,7 +106,7 @@ Web 控制台与扫描服务通过版本化 HTTP JSON API 对接。前端不依�
 ## 分布式 / 聚合接口
 
 分布式前端在每个节点上读下列聚合端点。跨节点合并在前端
-(`frontend/src/aggregator.js`) 完成，单节点调用也合法。
+(`web/src/aggregator.js`) 完成，单节点调用也合法。
 
 | 端点 | 返回 |
 |------|------|
@@ -132,3 +132,65 @@ Web 控制台与扫描服务通过版本化 HTTP JSON API 对接。前端不依�
 节点身份可通过 CLI（`--node-id` / `--node-label` / `--node-provider` /
 `--node-latitude` / `--node-longitude`）或 config.toml（`[node]` 段）注入；
 未提供时回落 `host:port`。
+
+## Aggregated / IP-drill-down endpoints
+
+Distributed / detail endpoints return enough information to drive the
+IP-detail panel, asset library, ASN/ISP breakdown and TCP snapshot
+preview in the distributed frontend without extra round trips.
+
+| 能力 | 方法 | 路径 | 说明 |
+|---|---|---|---|
+| IP 详情 | GET | `/api/v1/ip/{ip}` | geo + ASN + ISP + 全部开放端口 + 服务识别 + 风险评分 + 同 ASN / 同 ISP 邻居数 |
+| 资产库 | GET | `/api/v1/assets?page=&page_size=&country=&service=&category=&min_risk=` | 独立资产（IP）分页表 |
+| TCP 抓包 | GET | `/api/v1/snapshots/{ip}` | 抓包首字节 / HTTP title / TLS subject-issuer / banner |
+| ASN 分布 | GET | `/api/v1/stats/by-asn` | 按 ASN 聚合 |
+| 运营商分布 | GET | `/api/v1/stats/by-organization` | 按 ISP / 组织聚合 |
+
+`/api/v1/ip/{ip}` 响应示例：
+
+```json
+{
+  "ip": "203.0.113.10",
+  "ip_type": "IPv4",
+  "country": "US",
+  "region": "California",
+  "city": "Mountain View",
+  "isp": "Google LLC",
+  "asn": "AS15169",
+  "reverse_dns": "rdns.example.com",
+  "latitude": 37.4,
+  "longitude": -122.1,
+  "geo_source": "MaxMind",
+  "first_seen": "2026-07-24T10:00:00Z",
+  "last_seen": "2026-07-28T22:13:11Z",
+  "category": "web-server",
+  "risk_score": 30,
+  "risk_reasons": ["Web 服务暴露"],
+  "asn_peer_count": 47,
+  "isp_peer_count": 412,
+  "open_ports": [
+    {
+      "ip_address": "203.0.113.10",
+      "ip_type": "IPv4",
+      "port": 443,
+      "service_name": "https",
+      "banner": "Example Domain",
+      "country": "US",
+      "city": "Mountain View",
+      "isp": "Google LLC",
+      "asn": "AS15169",
+      "first_seen": "...",
+      "last_seen": "...",
+      "latitude": 37.4,
+      "longitude": -122.1
+    }
+  ]
+}
+```
+
+`/api/v1/results`、`/api/v1/results/{ip}`、`/api/v1/results/port/{port}`
+及 `/api/v1/results/round/{round}` 里的 `ScanResult` 现在也带
+`region` / `isp` / `asn` / `service_name` / `banner` / `category` /
+`risk_score` / `latitude` / `longitude` 字段；客户端忽略未知字段的
+前提下，旧版本的前端仍然可以继续使用。

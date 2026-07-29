@@ -1,5 +1,10 @@
 // API client for a single ip-scan backend.
 // Wraps fetch with health-aware error handling.
+//
+// All endpoints live under /api/v1. The constructor stores the raw base URL
+// (no /api/v1 suffix) and every fetch prepends /api/v1.
+
+const API_PREFIX = '/api/v1';
 
 export class BackendClient {
     constructor({ id, label, url, provider, latitude, longitude }) {
@@ -22,7 +27,10 @@ export class BackendClient {
             byIpFamily: null,
             byService: null,
             byCategory: null,
+            byAsn: null,
+            byOrganization: null,
             mapLocations: null,
+            assets: null,
             scanStatus: null,
             scanHistory: null,
         };
@@ -34,7 +42,7 @@ export class BackendClient {
 
     async healthCheck() {
         try {
-            const r = await fetch(this.url + '/healthz', { cache: 'no-store' });
+            const r = await fetch(this.url + API_PREFIX + '/healthz', { cache: 'no-store' });
             if (!r.ok) {
                 this.state = 'error';
                 this.lastError = `healthz ${r.status}`;
@@ -56,7 +64,7 @@ export class BackendClient {
 
     async loadSystem() {
         try {
-            const r = await fetch(this.url + '/system', { cache: 'no-store' });
+            const r = await fetch(this.url + API_PREFIX + '/system', { cache: 'no-store' });
             if (!r.ok) throw new Error(`system ${r.status}`);
             const j = await r.json();
             this.system = j;
@@ -81,7 +89,7 @@ export class BackendClient {
     }
 
     async fetchJson(path) {
-        const r = await fetch(this.url + path, { cache: 'no-store' });
+        const r = await fetch(this.url + API_PREFIX + path, { cache: 'no-store' });
         if (!r.ok) {
             const detail = await r.json().catch(() => ({}));
             throw new Error(detail.error || `HTTP ${r.status}`);
@@ -95,6 +103,20 @@ export class BackendClient {
     async getByService() { return this.fetchJson('/stats/by-service'); }
     async getByCategory() { return this.fetchJson('/stats/by-category'); }
     async getMapLocations(limit = 1000) { return this.fetchJson(`/map/locations?limit=${limit}`); }
+    async getByAsn() { return this.fetchJson('/stats/by-asn'); }
+    async getByOrganization() { return this.fetchJson('/stats/by-organization'); }
+    async getIpDetail(ip) { return this.fetchJson('/ip/' + encodeURIComponent(ip)); }
+    async getSnapshots(ip) { return this.fetchJson('/snapshots/' + encodeURIComponent(ip)); }
+    async getAssets(opts = {}) {
+        const params = new URLSearchParams();
+        params.set('page', opts.page || 1);
+        params.set('page_size', opts.pageSize || 100);
+        if (opts.country) params.set('country', opts.country);
+        if (opts.service) params.set('service', opts.service);
+        if (opts.category) params.set('category', opts.category);
+        if (opts.minRisk) params.set('min_risk', opts.minRisk);
+        return this.fetchJson('/assets?' + params.toString());
+    }
     async getResults(page = 1, pageSize = 50, search = '') {
         const params = new URLSearchParams({ page, page_size: pageSize });
         if (search) params.set('ip', search);
@@ -115,7 +137,7 @@ export class BackendClient {
     async stopScan() {
         return this.fetchJson('/scan/stop', { method: 'POST' });
     }
-    exportUrl(fmt) { return `${this.url}/export/${fmt}`; }
+    exportUrl(fmt) { return `${this.url}${API_PREFIX}/export/${fmt}`; }
 }
 
 function normalizeUrl(raw) {
@@ -123,7 +145,7 @@ function normalizeUrl(raw) {
     if (!u) throw new Error('empty url');
     if (!/^https?:\/\//i.test(u)) u = 'http://' + u;
     u = u.replace(/\/+$/, '');
-    // Strip /api/v1 suffix if accidentally included
+    // Strip /api/v1 suffix if accidentally included (the client always re-adds it)
     u = u.replace(/\/api\/v\d+$/i, '');
     return u;
 }

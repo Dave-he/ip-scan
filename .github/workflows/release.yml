@@ -1,0 +1,252 @@
+name: Release Binaries
+
+# Cross-platform release workflow. Triggered when a tag like v1.2.3 is
+# pushed, or manually via workflow_dispatch. Builds ip-scan for the
+# full matrix of supported targets:
+#   * Linux x86_64 (musl static-pie, gnu)
+#   * Linux aarch64 (musl static-pie, gnu cross)
+#   * macOS x86_64
+#   * macOS aarch64 (Apple Silicon)
+#   * Windows x86_64
+# Each artifact bundles the binary + web/ static assets + a sample
+# config.toml so operators can `tar xzf && ./ip-scan --api` immediately.
+# SHA256 checksums are produced alongside the binaries.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Build without publishing (dry-run)'
+        required: false
+        default: 'true'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }} (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-musl
+            ext: tar.gz
+            archive: tar
+            artifact: ip-scan
+            asset_prefix: ip-scan-linux-x86_64-musl
+            description: Linux x86_64 · static-pie · musl libc
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            ext: tar.gz
+            archive: tar
+            artifact: ip-scan
+            asset_prefix: ip-scan-linux-x86_64
+            description: Linux x86_64 · dynamic glibc
+          - os: ubuntu-22.04
+            target: aarch64-unknown-linux-musl
+            ext: tar.gz
+            archive: tar
+            artifact: ip-scan
+            asset_prefix: ip-scan-linux-aarch64-musl
+            description: Linux ARM64 · static-pie · musl libc
+            cross: true
+          - os: ubuntu-22.04
+            target: aarch64-unknown-linux-gnu
+            ext: tar.gz
+            archive: tar
+            artifact: ip-scan
+            asset_prefix: ip-scan-linux-aarch64
+            description: Linux ARM64 · dynamic glibc
+            cross: true
+          - os: macos-13
+            target: x86_64-apple-darwin
+            ext: tar.gz
+            archive: tar
+            artifact: ip-scan
+            asset_prefix: ip-scan-macos-x86_64
+            description: macOS x86_64 · Intel
+          - os: macos-14
+            target: aarch64-apple-darwin
+            ext: tar.gz
+            archive: tar
+            artifact: ip-scan
+            asset_prefix: ip-scan-macos-aarch64
+            description: macOS aarch64 · Apple Silicon
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+            ext: zip
+            archive: zip
+            artifact: ip-scan.exe
+            asset_prefix: ip-scan-windows-x86_64
+            description: Windows x86_64 · MSVC
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Rust toolchain with target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-${{ matrix.target }}-target-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.target }}-target-
+
+      - name: Install cross toolchain (Linux ARM64 only)
+        if: matrix.cross
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+
+      - name: Install dependencies (Linux)
+        if: startsWith(matrix.os, 'ubuntu')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpcap-dev
+          if [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
+            sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+          fi
+
+      - name: Prepare Npcap SDK (Windows)
+        if: matrix.os == 'windows-2022'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $sdkZip = "$env:RUNNER_TEMP\npcap-sdk.zip"
+          $sdkDir = "$env:RUNNER_TEMP\npcap-sdk"
+          $url = 'https://npcap.com/dist/npcap-sdk-1.15.zip'
+          Invoke-WebRequest -Uri $url -OutFile $sdkZip -TimeoutSec 60 -UseBasicParsing
+          if (Test-Path $sdkDir) { Remove-Item -Recurse -Force $sdkDir }
+          Expand-Archive -Path $sdkZip -DestinationPath $sdkDir -Force
+          $pcapHeader = Get-ChildItem -Path $sdkDir -Recurse -File -Filter pcap.h | Select-Object -First 1
+          $includeDir = $pcapHeader.Directory.FullName
+          $packetLibFile = Get-ChildItem -Path $sdkDir -Recurse -File -Filter Packet.lib | Where-Object { $_.DirectoryName -like '*x64*' } | Select-Object -First 1
+          if (-not $packetLibFile) { $packetLibFile = Get-ChildItem -Path $sdkDir -Recurse -File -Filter Packet.lib | Select-Object -First 1 }
+          $libDir = $packetLibFile.Directory.FullName
+          "LIB=$libDir;$env:LIB" | Out-File -Append $env:GITHUB_ENV
+          "INCLUDE=$includeDir;$env:INCLUDE" | Out-File -Append $env:GITHUB_ENV
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }} --locked
+
+      - name: Package (Unix)
+        if: matrix.archive == 'tar'
+        shell: bash
+        run: |
+          mkdir -p dist
+          cd target/${{ matrix.target }}/release
+          tar czf ../../../dist/${{ matrix.asset_prefix }}.tar.gz \
+            -C ../.. \
+            --transform "s|^web|web-bundle|" \
+            ${{ matrix.artifact }} web/ config.toml
+          ls -lh ../../../dist/
+
+      - name: Package (Windows)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          $dist = "dist"
+          New-Item -ItemType Directory -Force -Path $dist | Out-Null
+          $src = "target/${{ matrix.target }}/release/${{ matrix.artifact }}"
+          $tmpDir = "$dist/${{ matrix.asset_prefix }}"
+          New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
+          Copy-Item $src $tmpDir/
+          Copy-Item -Recurse -Force web $tmpDir/web
+          Copy-Item -Force config.toml $tmpDir/
+          Compress-Archive -Path $tmpDir/* -DestinationPath "$dist/${{ matrix.asset_prefix }}.zip" -Force
+          Remove-Item -Recurse -Force $tmpDir
+          Get-ChildItem $dist
+
+      - name: Generate SHA256
+        shell: bash
+        run: |
+          cd dist
+          sha256sum ${{ matrix.asset_prefix }}.${{ matrix.ext }} | tee ${{ matrix.asset_prefix }}.${{ matrix.ext }}.sha256
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_prefix }}
+          path: |
+            dist/${{ matrix.asset_prefix }}.${{ matrix.ext }}
+            dist/${{ matrix.asset_prefix }}.${{ matrix.ext }}.sha256
+
+  publish:
+    name: Publish Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Generate combined SHA256SUMS
+        shell: bash
+        run: |
+          cd artifacts
+          find . -name '*.sha256' -exec cat {} \; > ../SHA256SUMS
+          cat ../SHA256SUMS
+
+      - name: Create / update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          fail_on_unmatched_files: false
+          files: |
+            artifacts/**/*.tar.gz
+            artifacts/**/*.zip
+            SHA256SUMS
+          body: |
+            ## IP-Scan ${{ github.ref_name }}
+
+            Cross-platform builds of `ip-scan` for Linux (musl static-pie, gnu, x86_64 + aarch64),
+            macOS (Intel + Apple Silicon) and Windows (x86_64 MSVC).
+
+            Each archive bundles the binary, the static web console (`web/`) and a sample
+            `config.toml`, so you can run:
+
+            ```bash
+            tar xzf ip-scan-linux-x86_64-musl.tar.gz
+            ./ip-scan --api --node-id my-node --node-label "my-node"
+            ```
+
+            Then point a browser at `http://<host>:9090/` for the embedded UI, or
+            `node scripts/serve-frontend.mjs 4000` for a multi-node console.
+
+            ### Assets
+
+            | File | Target | Notes |
+            | --- | --- | --- |
+            | `ip-scan-linux-x86_64-musl` | Linux x86_64 | static-pie · recommended for most servers |
+            | `ip-scan-linux-x86_64` | Linux x86_64 | glibc dynamic |
+            | `ip-scan-linux-aarch64-musl` | Linux aarch64 | ARM64 static-pie |
+            | `ip-scan-linux-aarch64` | Linux aarch64 | ARM64 glibc |
+            | `ip-scan-macos-x86_64` | macOS Intel | |
+            | `ip-scan-macos-aarch64` | macOS Apple Silicon | |
+            | `ip-scan-windows-x86_64` | Windows x86_64 | MSVC · Npcap required for SYN |
+
+            Verify integrity with the bundled `SHA256SUMS` file.
+
+            See `README.md`, `docs/DISTRIBUTED.md` and `docs/OPERATIONS.md` for full usage.

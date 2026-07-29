@@ -57,28 +57,79 @@ HTTP enrichment 使用 reqwest 0.12 / rustls 0.23。WHOIS 依赖链仍有待迁�
 
 ## 分布式前端（多服务器）
 
-把 `ip-scan` 部署到任意数量的服务器后，用 [`frontend/`](frontend/) 控制台连接它们：
+`web/` 目录同时承载单节点嵌入式 UI 和多节点分布式控制台（旧的 `frontend/`
+已合并进来）。把 `ip-scan` 部署到任意数量的服务器后，在本地启动前端连
+接它们：
 
 ```bash
-# 1. 在每台扫描节点上启动 API（记得加身份）
+# 1. 在每台扫描节点上启动纯 API（记得加身份）
 ./ip-scan --api-only --node-id ali-sh --node-label "ali-shanghai" \
     --node-latitude 31.23 --node-longitude 121.47 --api-port 9090
 ./ip-scan --api-only --node-id tx-bj  --node-label "tx-beijing"  \
     --node-latitude 39.90 --node-longitude 116.40 --api-port 9090
 
-# 2. 在任意机器上启动前端
-cd frontend && node ../scripts/serve-frontend.mjs 4000
-# 打开 http://localhost:4000，点 + 服务器 输入每个节点的 API 地址
+# 2. 在任意机器上启动统一前端
+node scripts/serve-frontend.mjs 4000
+# 打开 http://localhost:4000 — 默认会自动连接 web/src/config.js 里写的两个节点
+# 想换默认节点直接编辑 DEFAULT_NODES 数组；想运行时注入也可以：
+#   <script>window.IPSCAN_DEFAULT_NODES = [...]</script>   (放在 index.html 之前)
+# 用户在侧边栏点 X 删除 / + 服务器 添加任意节点后，配置就以用户为准、DEFAULT_NODES 失效
 ```
 
-前端会自动跨节点聚合结果，并提供 5+ 种浏览模式：
+如果只是想看本机嵌入式 UI，直接 `cargo run -- --api` 然后访问
+`http://127.0.0.1:9090/` 即可 —— 同一份 `web/` 既是嵌入式 UI，又是
+分布式控制台，二者共用 BackendClient / Aggregator / 视图层。
+
+前端会自动跨节点聚合结果，并提供 8 种浏览模式：
 - **总览**：集群规模、节点贡献热力图、TOP 服务
-- **地图视图**：全球地图 · 每点一个独立 IP · 点击查看端口与服务
+- **地图视图**：全球 Leaflet 地图 · 每点一个独立 IP · 点击查看端口与服务 · 节点自身用紫色脉冲标记
 - **服务类型**：按 service_name（ssh / http / mysql / redis …）聚合
-- **IP 族**：IPv4 / IPv6 拆分 + 资产分类拆分
+- **IP 族**：IPv4 / IPv6 拆分 + 资产分类拆分 + **ASN / ISP 分布柱状图**
+- **资产库**：可按服务 / 国家 / 风险等级过滤的独立 IP 列表 · 一键进入 IP 详情面板
 - **节点列表 / 结果明细 / 扫描控制**
+- **IP 详情面板（滑出式）**：在地图、结果、资产库任意位置点击 IP 即弹出，展示完整开放端口、Banner、HTTP title、TLS subject/issuer、原始抓包字节、同 ASN/ISP 的邻居 IP 数和风险评分
 
 完整说明见 [](docs/DISTRIBUTED.md)。
+
+## 下载与安装
+
+每个 GitHub tag 都自动构建并发布跨平台产物（详见 `.github/workflows/release.yml`）：
+
+| 资产 | 平台 | 说明 |
+| --- | --- | --- |
+| `ip-scan-linux-x86_64-musl` | Linux x86_64 | static-pie · 无动态依赖 · 推荐大多数服务器 |
+| `ip-scan-linux-x86_64` | Linux x86_64 | glibc 动态链接 |
+| `ip-scan-linux-aarch64-musl` | Linux aarch64 | ARM64 static-pie |
+| `ip-scan-linux-aarch64` | Linux aarch64 | ARM64 glibc |
+| `ip-scan-macos-x86_64` | macOS Intel | |
+| `ip-scan-macos-aarch64` | macOS Apple Silicon | |
+| `ip-scan-windows-x86_64` | Windows x86_64 | MSVC · 启用 SYN 时需要 Npcap |
+
+每个 tarball / zip 同时打包二进制、`web/` 静态资源和 `config.toml`：
+
+```bash
+# Linux x86_64 (musl)
+tar xzf ip-scan-linux-x86_64-musl.tar.gz
+./ip-scan --api --node-id my-node --node-label "my-node"     --node-latitude 31.23 --node-longitude 121.47
+
+# macOS Apple Silicon
+tar xzf ip-scan-macos-aarch64.tar.gz
+./ip-scan --api
+```
+
+或运行一键安装脚本（自动检测平台、下载最新 release 并校验 SHA256）：
+
+```bash
+curl -sSL https://raw.githubusercontent.com/Dave-he/ip-scan/main/scripts/install.sh | bash
+```
+
+Docker：
+
+```bash
+docker compose up -d     # 启动单机 + WebUI（端口 9090 / 4000）
+```
+
+手动编译参考 `docs/OPERATIONS.md` 与 `AGENTS.md` 中的交叉编译步骤。
 
 ## 快速开始
 
@@ -140,6 +191,22 @@ cargo fmt --check
 | `--database PATH` | SQLite 文件路径 |
 
 所有 CLI 选项也支持对应的 `SCAN_*` 环境变量；并发数、超时、缓冲区和速率不能设置为 0，非法配置会在启动前直接报错。完整参数以 `ip-scan --help` 为准。反向 DNS 支持 IPv4 与压缩形式 IPv6，默认读取系统 `/etc/resolv.conf`，也可通过 `IP_SCAN_DNS_SERVER=192.0.2.53` 指定 DNS。
+
+## 新增 API（IP 详情 / 资产库 / ASN 聚合）
+
+`/api/v1/ip/{ip}` 单端点返回某 IP 的完整视图：地理、ASN、ISP、开放端口、服务识别、风险评分、同 ASN / ISP 邻居 IP 数。配合 `/api/v1/snapshots/{ip}` 还能看到 banner / HTTP title / TLS subject / 原始抓包首字节。
+
+新增端点：
+
+| 端点 | 说明 |
+| --- | --- |
+| `GET /api/v1/ip/{ip}` | 单 IP 详情 |
+| `GET /api/v1/assets?page=&page_size=&country=&service=&category=&min_risk=` | 独立 IP 分页列表 |
+| `GET /api/v1/snapshots/{ip}` | 抓包 + HTTP/TLS 元数据 |
+| `GET /api/v1/stats/by-asn` | 按自治域聚合 |
+| `GET /api/v1/stats/by-organization` | 按 ISP / 组织聚合 |
+
+字段说明见 [`docs/API_CONTRACT.md`](docs/API_CONTRACT.md) 和 [`docs/DATA_DICTIONARY.md`](docs/DATA_DICTIONARY.md)。
 
 ## 数据与 API
 

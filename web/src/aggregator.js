@@ -35,10 +35,78 @@ export class Aggregator {
             totals: this._totals(online),
             services: this._byService(online),
             categories: this._byCategory(online),
+            asns: this._byAsn(online),
+            organizations: this._byOrganization(online),
             families: this._byFamily(online),
             geoLocations: this._geoLocations(online),
             results: this._aggregateResults(online),
+            assets: this._aggregateAssets(online),
         };
+    }
+
+    _byAsn(servers) {
+        const merged = new Map();
+        for (const s of servers) {
+            const v = s.cache.byAsn;
+            if (!v || !v.asns) continue;
+            for (const e of v.asns) {
+                const cur = merged.get(e.asn) || { asn: e.asn, unique_ips: 0, open_ports: 0 };
+                cur.unique_ips += e.unique_ips;
+                cur.open_ports += e.open_ports;
+                merged.set(e.asn, cur);
+            }
+        }
+        return Array.from(merged.values()).sort((a, b) => b.unique_ips - a.unique_ips);
+    }
+
+    _byOrganization(servers) {
+        const merged = new Map();
+        for (const s of servers) {
+            const v = s.cache.byOrganization;
+            if (!v || !v.organizations) continue;
+            for (const e of v.organizations) {
+                const cur = merged.get(e.isp) || { isp: e.isp, unique_ips: 0, open_ports: 0 };
+                cur.unique_ips += e.unique_ips;
+                cur.open_ports += e.open_ports;
+                merged.set(e.isp, cur);
+            }
+        }
+        return Array.from(merged.values()).sort((a, b) => b.unique_ips - a.unique_ips);
+    }
+
+    /**
+     * Aggregate per-server asset lists into a deduplicated set keyed by IP.
+     * Each IP keeps the first non-null service/category/risk we find.
+     */
+    _aggregateAssets(servers) {
+        const map = new Map();
+        for (const s of servers) {
+            const v = s.cache.assets;
+            if (!v || !v.assets) continue;
+            for (const a of v.assets) {
+                const cur = map.get(a.ip) || {};
+                // Preserve known-good fields; prefer the first non-empty value
+                cur.ip = a.ip;
+                cur.ip_type = cur.ip_type || a.ip_type;
+                cur.open_ports = Math.max(cur.open_ports || 0, a.open_ports || 0);
+                cur.first_seen = cur.first_seen || a.first_seen;
+                cur.last_seen = cur.last_seen || a.last_seen;
+                cur.country = cur.country || a.country;
+                cur.city = cur.city || a.city;
+                cur.isp = cur.isp || a.isp;
+                cur.asn = cur.asn || a.asn;
+                cur.reverse_dns = cur.reverse_dns || a.reverse_dns;
+                cur.top_service = cur.top_service || a.top_service;
+                cur.category = cur.category || a.category;
+                cur.risk_score = cur.risk_score == null ? a.risk_score : cur.risk_score;
+                if (a.latitude != null) cur.latitude = a.latitude;
+                if (a.longitude != null) cur.longitude = a.longitude;
+                if (!cur._servers) cur._servers = [];
+                if (!cur._servers.includes(s.label)) cur._servers.push(s.label);
+                map.set(a.ip, cur);
+            }
+        }
+        return Array.from(map.values());
     }
 
     _totals(servers) {

@@ -1,11 +1,16 @@
 #!/usr/bin/env node
-// Tiny static file server for the frontend. Supports CORS so the
-// distributed frontend can talk to scanner nodes on different origins.
+// Tiny static file server for the unified ip-scan web console.
+// Serves the static assets under web/ (which holds the distributed console:
+// aggregator, 7 views, scan-control modal, etc.).
+//
 // Usage:
 //   node scripts/serve-frontend.mjs [port]
 //   PORT=4000 node scripts/serve-frontend.mjs
 //
-// Defaults: port 4000, serves ./frontend/ at the document root.
+// Defaults: port 4000, serves ./web/ at the document root.
+// CORS is allowed on every response so the console can talk to scanner
+// nodes on different origins (the backend itself also sets
+// `Cors::default().allow_any_origin()`).
 
 import { createServer } from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
@@ -13,7 +18,7 @@ import { join, extname, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const ROOT = resolve(here, '..', 'frontend');
+const ROOT = resolve(here, '..', 'web');
 const PORT = parseInt(process.env.PORT || process.argv[2] || '4000', 10);
 
 const MIME = {
@@ -59,7 +64,8 @@ const server = createServer(async (req, res) => {
         res.end(data);
     } catch (e) {
         if (e.code === 'ENOENT') {
-            // SPA fallback
+            // SPA fallback: any unknown path under / serves the console shell
+            // so deep links (e.g. shared URLs that include hash routes) work.
             try {
                 const data = await readFile(join(ROOT, 'index.html'));
                 res.writeHead(200, {
@@ -90,5 +96,5 @@ server.on('request', (req, res) => {
 });
 
 server.listen(PORT, () => {
-    console.log(`[frontend] serving ${ROOT} at http://127.0.0.1:${PORT}/`);
+    console.log(`[ip-scan web console] serving ${ROOT} at http://127.0.0.1:${PORT}/`);
 });

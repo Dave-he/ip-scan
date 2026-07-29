@@ -55,8 +55,17 @@ pub async fn get_results(
                     first_seen: r.first_seen,
                     last_seen: r.last_seen,
                     country: r.country,
+                    region: r.region,
                     city: r.city,
+                    isp: r.isp,
+                    asn: r.asn,
                     reverse_dns: r.reverse_dns,
+                    service_name: r.service_name,
+                    banner: r.banner,
+                    category: None,
+                    risk_score: r.risk_score,
+                    latitude: r.latitude,
+                    longitude: r.longitude,
                 })
                 .collect();
 
@@ -111,8 +120,17 @@ pub async fn get_results_by_ip(db: web::Data<SqliteDB>, ip: web::Path<String>) -
                         first_seen: r.first_seen,
                         last_seen: r.last_seen,
                         country: r.country,
+                        region: r.region,
                         city: r.city,
+                        isp: r.isp,
+                        asn: r.asn,
                         reverse_dns: r.reverse_dns,
+                        service_name: r.service_name,
+                        banner: r.banner,
+                        category: None,
+                        risk_score: r.risk_score,
+                        latitude: r.latitude,
+                        longitude: r.longitude,
                     })
                     .collect();
 
@@ -162,8 +180,17 @@ pub async fn get_results_by_port(db: web::Data<SqliteDB>, port: web::Path<u16>) 
                         first_seen: r.first_seen,
                         last_seen: r.last_seen,
                         country: r.country,
+                        region: r.region,
                         city: r.city,
+                        isp: r.isp,
+                        asn: r.asn,
                         reverse_dns: r.reverse_dns,
+                        service_name: r.service_name,
+                        banner: r.banner,
+                        category: None,
+                        risk_score: r.risk_score,
+                        latitude: r.latitude,
+                        longitude: r.longitude,
                     })
                     .collect();
 
@@ -216,8 +243,17 @@ pub async fn get_results_by_round(
                         first_seen: r.first_seen,
                         last_seen: r.last_seen,
                         country: r.country,
+                        region: r.region,
                         city: r.city,
+                        isp: r.isp,
+                        asn: r.asn,
                         reverse_dns: r.reverse_dns,
+                        service_name: r.service_name,
+                        banner: r.banner,
+                        category: None,
+                        risk_score: r.risk_score,
+                        latitude: r.latitude,
+                        longitude: r.longitude,
                     })
                     .collect();
 
@@ -884,8 +920,17 @@ pub async fn export_json(
                     first_seen: r.first_seen,
                     last_seen: r.last_seen,
                     country: r.country,
+                    region: r.region,
                     city: r.city,
+                    isp: r.isp,
+                    asn: r.asn,
                     reverse_dns: r.reverse_dns,
+                    service_name: r.service_name,
+                    banner: r.banner,
+                    category: None,
+                    risk_score: r.risk_score,
+                    latitude: r.latitude,
+                    longitude: r.longitude,
                 })
                 .collect();
 
@@ -1247,6 +1292,332 @@ pub async fn get_map_locations(
             error!("Failed to get map locations: {}", e);
             HttpResponse::InternalServerError().json(ErrorResponse {
                 error: "Failed to retrieve map locations".to_string(),
+                code: Some("DATABASE_ERROR".to_string()),
+            })
+        }
+    }
+}
+
+// ── IP detail / aggregates ──────────────────────────────────────────
+
+/// Aggregate everything we know about one IP: geo, ASN, ISP, all open
+/// ports, detected services, risk assessment, and how many other IPs
+/// share the same ASN / ISP. Single endpoint that drives the IP detail
+/// panel in the distributed frontend.
+#[utoipa::path(
+    get,
+    path = "/api/v1/ip/{ip}",
+    params(("ip" = String, Path, description = "IP address")),
+    responses(
+        (status = 200, description = "Comprehensive IP detail", body = IpDetailResponse),
+        (status = 500, description = "Database error", body = ErrorResponse),
+    ),
+    tag = "Results"
+)]
+pub async fn get_ip_detail(db: web::Data<SqliteDB>, ip: web::Path<String>) -> impl Responder {
+    let ip_str = ip.to_string();
+    let geo = match db.get_ip_detail(&ip_str) {
+        Ok(g) => g,
+        Err(e) => {
+            error!("Failed to read geo info for {ip_str}: {e}");
+            return HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Failed to read ip details".to_string(),
+                code: Some("DATABASE_ERROR".to_string()),
+            });
+        }
+    };
+    let rows = match db.get_results_by_ip(&ip_str) {
+        Ok(r) => r,
+        Err(e) => {
+            error!("Failed to read results for {ip_str}: {e}");
+            return HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Failed to read scan results".to_string(),
+                code: Some("DATABASE_ERROR".to_string()),
+            });
+        }
+    };
+    let services = match db.get_service_info_by_ip(&ip_str) {
+        Ok(s) => s,
+        Err(e) => {
+            error!("Failed to read services for {ip_str}: {e}");
+            return HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Failed to read service info".to_string(),
+                code: Some("DATABASE_ERROR".to_string()),
+            });
+        }
+    };
+    let (category, risk_score, risk_reasons) = if services.is_empty() {
+        ("unknown".to_string(), 0u8, Vec::new())
+    } else {
+        let cat = crate::model::IpServiceSummary::categorize(&services);
+        let (score, reasons) = crate::model::IpServiceSummary::assess_risk(&services);
+        (cat, score, reasons)
+    };
+    let first_seen = rows.iter().map(|r| r.first_seen.clone()).min();
+    let last_seen = rows.iter().map(|r| r.last_seen.clone()).max();
+
+    // Build ScanResult entries with risk score per port
+    let mut open_ports: Vec<ScanResult> = rows
+        .into_iter()
+        .map(|r| {
+            let port_services: Vec<ServiceInfo> = services
+                .iter()
+                .filter(|s| s.port == r.port)
+                .cloned()
+                .collect();
+            ScanResult {
+                ip_address: r.ip_address.clone(),
+                ip_type: r.ip_type,
+                port: r.port,
+                scan_round: r.scan_round,
+                first_seen: r.first_seen,
+                last_seen: r.last_seen,
+                country: r.country.clone(),
+                region: r.region,
+                city: r.city.clone(),
+                isp: r.isp.clone(),
+                asn: r.asn.clone(),
+                reverse_dns: r.reverse_dns.clone(),
+                service_name: r.service_name.clone(),
+                banner: r.banner.clone(),
+                category: if port_services.is_empty() {
+                    None
+                } else {
+                    Some(category.clone())
+                },
+                risk_score: if port_services.is_empty() {
+                    None
+                } else {
+                    let (s, _) = crate::model::IpServiceSummary::assess_risk(&port_services);
+                    Some(s)
+                },
+                latitude: r.latitude,
+                longitude: r.longitude,
+            }
+        })
+        .collect();
+
+    // Compute peer counts only when ASN/ISP present to avoid extra DB chatter
+    let asn_peer_count = geo
+        .asn
+        .as_deref()
+        .and_then(|s| if s.is_empty() { None } else { Some(s) })
+        .map(|s| db.count_asn_peers(s).unwrap_or(0));
+    let isp_peer_count = geo
+        .isp
+        .as_deref()
+        .and_then(|s| if s.is_empty() { None } else { Some(s) })
+        .map(|s| db.count_isp_peers(s).unwrap_or(0));
+
+    // Stable sort: ports ordered ascending for predictability
+    open_ports.sort_by_key(|p| p.port);
+
+    HttpResponse::Ok().json(IpDetailResponse {
+        ip: geo.ip,
+        ip_type: open_ports
+            .first()
+            .map(|p| p.ip_type.clone())
+            .unwrap_or_else(|| "unknown".to_string()),
+        country: geo.country,
+        region: geo.region,
+        city: geo.city,
+        isp: geo.isp,
+        asn: geo.asn,
+        reverse_dns: geo.reverse_dns,
+        latitude: geo.latitude,
+        longitude: geo.longitude,
+        geo_source: Some(geo.source),
+        first_seen,
+        last_seen,
+        open_ports,
+        category,
+        risk_score,
+        risk_reasons,
+        asn_peer_count,
+        isp_peer_count,
+    })
+}
+
+/// Aggregate stats grouped by ASN (e.g. `AS4134` -> unique IP count).
+/// Drives the ASN bar / chart in the IP-family and overview views.
+#[utoipa::path(
+    get,
+    path = "/api/v1/stats/by-asn",
+    responses(
+        (status = 200, description = "Per-ASN aggregate", body = AsnStatsResponse),
+        (status = 500, description = "Database error", body = ErrorResponse),
+    ),
+    tag = "Distributed"
+)]
+pub async fn get_stats_by_asn(db: web::Data<SqliteDB>) -> impl Responder {
+    match db.get_stats_by_asn() {
+        Ok(rows) => {
+            let total_unique_ips: usize = rows.iter().map(|r| r.1).sum();
+            let asns: Vec<AsnStatsEntry> = rows
+                .into_iter()
+                .map(|(asn, unique_ips, open_ports)| AsnStatsEntry {
+                    asn,
+                    unique_ips,
+                    open_ports,
+                })
+                .collect();
+            HttpResponse::Ok().json(AsnStatsResponse {
+                asns,
+                total_unique_ips,
+            })
+        }
+        Err(e) => {
+            error!("Failed to get asn stats: {e}");
+            HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Failed to retrieve asn stats".to_string(),
+                code: Some("DATABASE_ERROR".to_string()),
+            })
+        }
+    }
+}
+
+/// Aggregate stats grouped by ISP / organization.
+#[utoipa::path(
+    get,
+    path = "/api/v1/stats/by-organization",
+    responses(
+        (status = 200, description = "Per-organization aggregate", body = OrgStatsResponse),
+        (status = 500, description = "Database error", body = ErrorResponse),
+    ),
+    tag = "Distributed"
+)]
+pub async fn get_stats_by_organization(db: web::Data<SqliteDB>) -> impl Responder {
+    match db.get_stats_by_organization() {
+        Ok(rows) => {
+            let total_unique_ips: usize = rows.iter().map(|r| r.1).sum();
+            let organizations: Vec<OrgStatsEntry> = rows
+                .into_iter()
+                .map(|(isp, unique_ips, open_ports)| OrgStatsEntry {
+                    isp,
+                    unique_ips,
+                    open_ports,
+                })
+                .collect();
+            HttpResponse::Ok().json(OrgStatsResponse {
+                organizations,
+                total_unique_ips,
+            })
+        }
+        Err(e) => {
+            error!("Failed to get organization stats: {e}");
+            HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Failed to retrieve organization stats".to_string(),
+                code: Some("DATABASE_ERROR".to_string()),
+            })
+        }
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/assets",
+    params(AssetsQuery),
+    responses(
+        (status = 200, description = "Paginated asset list", body = AssetSummaryListResponse),
+        (status = 400, description = "Invalid query parameters", body = ErrorResponse),
+        (status = 500, description = "Database error", body = ErrorResponse),
+    ),
+    tag = "Results"
+)]
+pub async fn list_assets(
+    db: web::Data<SqliteDB>,
+    query: web::Query<AssetsQuery>,
+) -> impl Responder {
+    let page = query.page.unwrap_or(1).max(1);
+    let page_size = query.page_size.unwrap_or(50).clamp(1, 500);
+    let (mut assets, total) = match db.list_assets(
+        page,
+        page_size,
+        query.country.as_deref(),
+        query.service.as_deref(),
+        query.category.as_deref(),
+        query.min_risk,
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            error!("Failed to list assets: {e}");
+            return HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Failed to retrieve assets".to_string(),
+                code: Some("DATABASE_ERROR".to_string()),
+            });
+        }
+    };
+    if let Err(e) = db.enrich_assets(&mut assets) {
+        error!("Failed to enrich assets: {e}");
+    }
+    let total_pages = if total == 0 {
+        0
+    } else {
+        total.div_ceil(page_size).max(1)
+    };
+    HttpResponse::Ok().json(AssetSummaryListResponse {
+        assets,
+        total,
+        page,
+        page_size,
+        total_pages,
+    })
+}
+
+/// Captured TCP snapshots (raw banner / HTTP / TLS bytes) for a single
+/// IP, one row per port. Drives the "IP preview" panel and the per-port
+/// detail drawer in the distributed frontend.
+#[utoipa::path(
+    get,
+    path = "/api/v1/snapshots/{ip}",
+    params(("ip" = String, Path, description = "IP address")),
+    responses(
+        (status = 200, description = "TCP snapshots", body = TcpSnapshotListResponse),
+        (status = 500, description = "Database error", body = ErrorResponse),
+    ),
+    tag = "Services"
+)]
+pub async fn get_tcp_snapshots_for_ip(
+    db: web::Data<SqliteDB>,
+    ip: web::Path<String>,
+) -> impl Responder {
+    let ip_str = ip.to_string();
+    match db.get_tcp_snapshots_by_ip(&ip_str) {
+        Ok(rows) => {
+            let snapshots: Vec<TcpSnapshotResponse> = rows
+                .into_iter()
+                .map(|s| TcpSnapshotResponse {
+                    ip: s.ip.clone(),
+                    port: s.port,
+                    protocol: s.protocol,
+                    banner_first_line: s.banner_first_line,
+                    banner_raw_hex: s.banner_raw_hex,
+                    banner_raw_len: s.banner_raw_len,
+                    http_status: s.http_status.map(|v| v as i64),
+                    http_server: s.http_server,
+                    http_title: s.http_title,
+                    tls_subject: s.tls_subject,
+                    tls_issuer: s.tls_issuer,
+                    tls_version: s.tls_version,
+                    tls_not_before: s.tls_not_before,
+                    tls_not_after: s.tls_not_after,
+                    tls_san: s.tls_san,
+                    os_guess: s.os_guess,
+                    rtt_ms: s.rtt_ms,
+                    detected_technologies: s.detected_technologies,
+                    purpose: s.purpose,
+                    captured_at: s.captured_at,
+                })
+                .collect();
+            HttpResponse::Ok().json(TcpSnapshotListResponse {
+                ip: ip_str,
+                snapshots,
+            })
+        }
+        Err(e) => {
+            error!("Failed to read snapshots for {ip_str}: {e}");
+            HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Failed to retrieve snapshots".to_string(),
                 code: Some("DATABASE_ERROR".to_string()),
             })
         }

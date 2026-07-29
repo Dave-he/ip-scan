@@ -80,3 +80,30 @@
 - 网络超时和解析失败保留为空；服务探测按一小时退避重试，其他 enrichment 由后续轮次继续补偿。
 - 服务 Banner、Body 预览和 WHOIS 数据可能包含敏感信息，生产环境应限制数据库、API 和导出文件访问。
 - `port_bitmaps` 默认保留最新两个扫描轮次供变化接口比较；更旧轮次会按最大轮次计算边界后清理。需要长期审计时应先备份数据库。
+
+## 聚合 / 明细接口
+
+| 端点 | 返回 | 用途 |
+| --- | --- | --- |
+| `GET /api/v1/ip/{ip}` | `IpDetailResponse` | 单个 IP 的完整视图：地理、ASN、ISP、开放端口、服务识别、风险评分、同 ASN/ISP 邻居数 |
+| `GET /api/v1/assets` | `AssetSummaryListResponse` | 独立 IP 分页列表，可按服务 / 国家 / 类别 / 风险等级过滤 |
+| `GET /api/v1/snapshots/{ip}` | `TcpSnapshotListResponse` | 抓包首字节 / HTTP / TLS 元数据 |
+| `GET /api/v1/stats/by-asn` | `AsnStatsResponse` | 按 ASN 聚合唯一 IP 数和开放端口数 |
+| `GET /api/v1/stats/by-organization` | `OrgStatsResponse` | 按 ISP / 组织聚合 |
+
+`/api/v1/results`、`/api/v1/results/{ip}`、`/api/v1/results/port/{port}` 与
+`/api/v1/results/round/{round}` 返回的 `ScanResult` 现在带
+`region`、`isp`、`asn`、`service_name`、`banner`、`category`、
+`risk_score`、`latitude`、`longitude`。旧客户端忽略未知字段即可继续
+使用；新客户端可一次性在表格里展示更多上下文。
+
+## 字段含义
+
+- `region`：GeoIP 输出的州 / 省 / 一级行政区。
+- `isp`：运营商 / 组织 / 公司名（取决于数据源）。
+- `asn`：自治域编号，例如 `AS15169`。
+- `service_name`：服务探测后归一化的名字（`http` / `https` / `redis` / `mysql` 等）；空表示该端口尚未执行服务探测。
+- `banner`：HTTP title 优先，否则是 banner 首行；非空字符串均经过截断 + 转义，长度上限约 240 字节。
+- `category`：资产分类，定义见 `IpServiceSummary::categorize`。
+- `risk_score`：0-100 整数，分数越高暴露面越危险；参见 `IpServiceSummary::assess_risk`。
+- `latitude` / `longitude`：GeoIP 来源提供的十进制度数；缺失时为 `null`。

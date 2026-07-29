@@ -25,23 +25,41 @@ cargo test --offline
 
 涉及 API、CLI、数据库或扫描流水线时，还要运行对应的最小本地验证（包括健康检查、指标端点或数据库迁移），并记录结果。不得把“编译成功”当作端到端扫描完成的证明。
 
-涉及分布式前端（`frontend/`）改动时，至少跑：
+涉及分布式前端（`web/`）改动时，至少跑：
 
 ```bash
-node --check frontend/src/app.js && node --check frontend/src/aggregator.js
+node --check web/src/app.js && node --check web/src/aggregator.js
 node scripts/test-frontend-e2e.mjs   # 启动两台后端后跑聚合冒烟
 ```
 
-并打开 `http://127.0.0.1:4000/` 用浏览器确认 5 个视图都能正常切换。
+并打开 `http://127.0.0.1:4000/` 用浏览器确认 7 个视图都能正常切换
+（总览 / 地图 / 服务类型 / IP 族 / 节点列表 / 结果明细 / 扫描控制）。
 
 ## 分布式前端规则
 
-- `frontend/` 是独立的前端项目，不依赖 Rust 构建步骤；任何对前端布局 / 文案 /
-  新视图的改动都属于该目录的本地事务。
+- `web/` 是统一的前端项目（旧的 `frontend/` 已合并进来），不依赖 Rust
+  构建步骤；任何对前端布局 / 文案 / 新视图的改动都属于该目录的本地事务。
+- `web/` 同时承载嵌入式 UI（Rust 进程以 `--api` 启动后 `http://host:port/`
+  直接渲染同一份控制台）和独立分布式控制台（`scripts/serve-frontend.mjs`
+  启动后通过 localStorage 添加远端节点）。两者共用 `web/src/api.js` +
+  `web/src/aggregator.js` + `web/src/views/`。
+- 所有 `/api/v1/*` 调用必须走 `web/src/api.js` 的 `BackendClient`，端点路径
+  一律带 `/api/v1` 前缀（`BackendClient` 内部用 `API_PREFIX` 常量统一拼接，
+  不要在视图层硬编码 `/api/v1`）。
+- 分布式节点的默认地址写在 `web/src/config.js` 的 `DEFAULT_NODES`。
+  首次访问（localStorage 空）会自动应用，用户编辑后 localStorage 接管。
+  修改默认部署时同步更新 `DEFAULT_NODES` + `deploy.sh` + `docs/DISTRIBUTED.md`。
 - 新增聚合端点时必须同步：(a) `src/api/handlers.rs` 的 handler，(b) `src/api/models.rs`
-  的 schema，(c) `src/api/routes.rs` 的 utoipa 注册 + 路由，(d) `frontend/src/api.js`
-  的 client 方法，(e) `frontend/src/aggregator.js` 的合并逻辑，(f)
+  的 schema，(c) `src/api/routes.rs` 的 utoipa 注册 + 路由，(d) `web/src/api.js`
+  的 client 方法，(e) `web/src/aggregator.js` 的合并逻辑，(f)
   `docs/API_CONTRACT.md` 与 `docs/DISTRIBUTED.md`。
+- 维护以下聚合端点（前端 `资产库 / IP 详情 / ASN / ISP / 抓包快照` 视图依赖）：
+  - `GET /api/v1/ip/{ip}` — 单 IP 完整视图
+  - `GET /api/v1/assets` — 独立 IP 分页列表（支持过滤）
+  - `GET /api/v1/snapshots/{ip}` — 抓包首字节 / HTTP / TLS
+  - `GET /api/v1/stats/by-asn` 与 `GET /api/v1/stats/by-organization`
+  修改 schema 时必须同步前端 `web/src/views/ip-detail.js`、`web/src/views/assets.js`、
+  `web/src/aggregator.js` 与 `scripts/test-frontend-e2e.mjs`。
 - 节点身份字段（`node_id` / `node_label` / `node_provider` / 坐标）必须由 CLI /
   config 注入，不能在前端硬编码。
 

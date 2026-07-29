@@ -20,6 +20,15 @@ pub fn config_results_routes(cfg: &mut web::ServiceConfig) {
                 web::get().to(handlers::get_results_by_round),
             ),
     );
+    // IP-detail + asset-list views. Kept at /ip/{ip} (singular) so the
+    // frontend can resolve any IP drill-down with a single GET.
+    cfg.route("/ip/{ip}", web::get().to(handlers::get_ip_detail));
+    cfg.route("/assets", web::get().to(handlers::list_assets));
+    // Captured TCP snapshots (banner / HTTP / TLS) per IP.
+    cfg.route(
+        "/snapshots/{ip}",
+        web::get().to(handlers::get_tcp_snapshots_for_ip),
+    );
 }
 
 /// Configure statistics routes
@@ -49,6 +58,11 @@ pub fn config_stats_routes(cfg: &mut web::ServiceConfig) {
             .route(
                 "/by-category",
                 web::get().to(handlers::get_stats_by_category),
+            )
+            .route("/by-asn", web::get().to(handlers::get_stats_by_asn))
+            .route(
+                "/by-organization",
+                web::get().to(handlers::get_stats_by_organization),
             ),
     );
 }
@@ -99,6 +113,8 @@ pub fn config_distributed_routes(cfg: &mut web::ServiceConfig) {
         handlers::get_results_by_ip,
         handlers::get_results_by_port,
         handlers::get_results_by_round,
+        handlers::get_ip_detail,
+        handlers::list_assets,
         handlers::get_stats,
         handlers::get_prometheus_metrics,
         handlers::get_system_info,
@@ -113,7 +129,10 @@ pub fn config_distributed_routes(cfg: &mut web::ServiceConfig) {
         handlers::get_stats_by_ip_family,
         handlers::get_stats_by_service,
         handlers::get_stats_by_category,
+        handlers::get_stats_by_asn,
+        handlers::get_stats_by_organization,
         handlers::get_map_locations,
+        handlers::get_tcp_snapshots_for_ip,
     ),
     components(
         schemas(
@@ -141,6 +160,16 @@ pub fn config_distributed_routes(cfg: &mut web::ServiceConfig) {
             models::CategoryStatsEntry,
             models::IpLocationResponse,
             models::IpLocationsResponse,
+            models::IpDetailResponse,
+            models::AsnStatsResponse,
+            models::AsnStatsEntry,
+            models::OrgStatsResponse,
+            models::OrgStatsEntry,
+            models::AssetSummary,
+            models::AssetSummaryListResponse,
+            models::TcpSnapshotResponse,
+            models::TcpSnapshotListResponse,
+            models::AssetsQuery,
             crate::dao::PortChange,
         )
     ),
