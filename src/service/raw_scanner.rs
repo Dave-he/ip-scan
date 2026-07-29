@@ -39,7 +39,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
 /// Configuration for [`RawScanner`]. Sensible defaults target "run full
 /// bandwidth on a single host"; tune `num_workers` and
@@ -449,6 +449,7 @@ fn worker_main(
                 continue;
             }
             let addr = libc::sockaddr_in {
+                #[cfg(target_os = "macos")]
                 sin_len: 0,
                 sin_family: libc::AF_INET as libc::sa_family_t,
                 sin_port: probe.port.to_be(),
@@ -666,6 +667,7 @@ fn start_nonblocking_connect_v4(ip: Ipv4Addr, port: u16) -> io::Result<libc::c_i
     }
 
     let addr = libc::sockaddr_in {
+        #[cfg(target_os = "macos")]
         sin_len: 0,
         sin_family: libc::AF_INET as libc::sa_family_t,
         sin_port: port.to_be(),
