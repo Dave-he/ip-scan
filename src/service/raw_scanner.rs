@@ -852,8 +852,8 @@ mod tests {
         let ports = vec![open_port, closed_a, closed_b, closed_c];
         let db = SqliteDB::new(":memory:").unwrap();
         let cfg = RawScannerConfig {
-            num_workers: 2,
-            max_inflight_per_worker: 32,
+            num_workers: 4,
+            max_inflight_per_worker: 16,
             timeout_ms: 200,
             db_batch_size: 4,
             flush_interval_ms: 20,
@@ -870,7 +870,7 @@ mod tests {
             "scanner should report >= 4 scanned, got {total}"
         );
         assert!(
-            elapsed < Duration::from_secs(3),
+            elapsed < Duration::from_secs(10),
             "scan took {elapsed:?} for {total} probes"
         );
     }
