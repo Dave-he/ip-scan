@@ -25,6 +25,26 @@ cargo test --offline
 
 涉及 API、CLI、数据库或扫描流水线时，还要运行对应的最小本地验证（包括健康检查、指标端点或数据库迁移），并记录结果。不得把“编译成功”当作端到端扫描完成的证明。
 
+涉及分布式前端（`frontend/`）改动时，至少跑：
+
+```bash
+node --check frontend/src/app.js && node --check frontend/src/aggregator.js
+node scripts/test-frontend-e2e.mjs   # 启动两台后端后跑聚合冒烟
+```
+
+并打开 `http://127.0.0.1:4000/` 用浏览器确认 5 个视图都能正常切换。
+
+## 分布式前端规则
+
+- `frontend/` 是独立的前端项目，不依赖 Rust 构建步骤；任何对前端布局 / 文案 /
+  新视图的改动都属于该目录的本地事务。
+- 新增聚合端点时必须同步：(a) `src/api/handlers.rs` 的 handler，(b) `src/api/models.rs`
+  的 schema，(c) `src/api/routes.rs` 的 utoipa 注册 + 路由，(d) `frontend/src/api.js`
+  的 client 方法，(e) `frontend/src/aggregator.js` 的合并逻辑，(f)
+  `docs/API_CONTRACT.md` 与 `docs/DISTRIBUTED.md`。
+- 节点身份字段（`node_id` / `node_label` / `node_provider` / 坐标）必须由 CLI /
+  config 注入，不能在前端硬编码。
+
 ## 文档同步
 
 新增 CLI 参数、API 字段、数据库字段、探测器或运行约束时，必须同步 README、`docs/ARCHITECTURE.md`、`docs/OPERATIONS.md`、`docs/DATA_DICTIONARY.md`、`docs/API_CONTRACT.md` 和相关 OpenAPI 注释。
@@ -93,6 +113,7 @@ apt-get install -y screen || yum install -y screen || true
 # 启动（screen 保障断线后进程继续）
 screen -dmS scan bash -c './ip-scan -s <START_IP> -e <END_IP> \
   --concurrency 1000 --timeout 500 --max-rate 5000 \
+  --probe-service --probe-concurrency 16 \
   --api --loop-mode > /tmp/scan.log 2>&1'
 
 # 验证
@@ -136,7 +157,8 @@ pkill -f ip-scan
 - **磁盘空间**：sshali 仅 ~1.3G 可用，解压需 ~17MB 二进制 + 6.8MB tar，空间足够但不可放大量日志
 - **旧进程清理**：部署前 `pkill -f ip-scan`，否则端口 9090 被占用
 - **打包路径**：tar 的 `-C` 参数确保解压后目录结构正确（ip-scan 二进制在根，web/ 和 config.toml 在同级）
-- **服务探测轮次**：`--api --loop-mode` 启动后，主扫描和 enrichment 探测交替运行；enrichment 自动补充之前缺失的 service probe
+- **服务探测轮次**：必须显式加上 `--probe-service --probe-concurrency 16` 才会启动 enrichment worker（默认是关的）。开启后，主扫描和 enrichment 探测交替运行；enrichment 自动补充之前缺失的 service probe。`deploy.sh` 的 `COMMON_FLAGS` 已经默认带上，没有 `--probe-service` 时 service_info 表几乎不会增长
+- **max-rate 默认 5000**：早期版本不限速时 TX 触发 Linux SYN cookies（1.5M+ SyncookiesRecv），导致部分真实开放端口被遗漏。`deploy.sh` 的 `COMMON_FLAGS` 默认带 `--max-rate 5000`，手工启动时不要漏
 
 ### 7. 快速部署一键脚本
 
@@ -150,7 +172,7 @@ scp -P 2222 /tmp/ip-scan-deploy.tar.gz root@43.133.224.11:/tmp/ && \
 ssh -p 2222 -o ServerAliveInterval=10 root@43.133.224.11 \
   "pkill -f ip-scan || true; mkdir -p /root/ip-scan && cd /root/ip-scan && \
    tar xzf /tmp/ip-scan-deploy.tar.gz && \
-   screen -dmS scan bash -c 'cd /root/ip-scan && ./ip-scan -s 43.133.224.0 -e 43.133.224.255 --concurrency 1000 --timeout 500 --max-rate 5000 --api --loop-mode > /tmp/scan.log 2>&1' && \
+   screen -dmS scan bash -c 'cd /root/ip-scan && ./ip-scan -s 43.133.224.0 -e 43.133.224.255 --concurrency 1000 --timeout 500 --max-rate 5000 --probe-service --probe-concurrency 16 --api --loop-mode > /tmp/scan.log 2>&1' && \
    sleep 1 && screen -ls"
 
 # ===== 一键部署到 sshali (39.103.188.33) =====
@@ -162,7 +184,7 @@ scp -P 2222 /tmp/ip-scan-deploy.tar.gz root@39.103.188.33:/tmp/ && \
 ssh -p 2222 -o ServerAliveInterval=10 root@39.103.188.33 \
   "pkill -f ip-scan || true; mkdir -p /root/ip-scan && cd /root/ip-scan && \
    tar xzf /tmp/ip-scan-deploy.tar.gz && \
-   screen -dmS scan bash -c 'cd /root/ip-scan && ./ip-scan -s 39.103.0.0 -e 39.103.255.255 --concurrency 1000 --timeout 500 --max-rate 5000 --api --loop-mode > /tmp/scan.log 2>&1' && \
+   screen -dmS scan bash -c 'cd /root/ip-scan && ./ip-scan -s 39.103.0.0 -e 39.103.255.255 --concurrency 1000 --timeout 500 --max-rate 5000 --probe-service --probe-concurrency 16 --api --loop-mode > /tmp/scan.log 2>&1' && \
    sleep 1 && screen -ls"
 
 # ===== 远程检查状态（任一服务器）=====

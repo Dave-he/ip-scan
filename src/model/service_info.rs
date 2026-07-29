@@ -228,6 +228,20 @@ impl IpServiceSummary {
         }
         "server".to_string()
     }
+
+    /// Convenience wrapper that categorizes from raw service names. Used by
+    /// aggregate DAO queries where we only fetched `service_name` strings.
+    pub fn categorize_from_names(service_names: &[String]) -> String {
+        let placeholders: Vec<ServiceInfo> = service_names
+            .iter()
+            .map(|name| {
+                let mut s = ServiceInfo::new("0.0.0.0".to_string(), 0);
+                s.service_name = name.clone();
+                s
+            })
+            .collect();
+        Self::categorize(&placeholders)
+    }
 }
 
 #[cfg(test)]

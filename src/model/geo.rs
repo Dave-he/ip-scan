@@ -10,6 +10,12 @@ pub struct IpGeoInfo {
     pub asn: Option<String>,
     pub reverse_dns: Option<String>,
     pub source: String,
+    /// Latitude in decimal degrees, when the geo source provided it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latitude: Option<f64>,
+    /// Longitude in decimal degrees, when the geo source provided it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub longitude: Option<f64>,
 }
 
 impl IpGeoInfo {
@@ -23,6 +29,14 @@ impl IpGeoInfo {
             asn: None,
             reverse_dns: None,
             source,
+            latitude: None,
+            longitude: None,
         }
+    }
+
+    pub fn with_coordinates(mut self, latitude: f64, longitude: f64) -> Self {
+        self.latitude = Some(latitude);
+        self.longitude = Some(longitude);
+        self
     }
 }

@@ -433,6 +433,7 @@ mod tests {
             probe_concurrency: 50,
             geo_concurrency: 8,
             round_delay_ms: 0,
+            max_rounds: 4,
             nmap_sS: false,
             nmap_sT: false,
             nmap_sn: false,
@@ -451,6 +452,11 @@ mod tests {
             nmap_oX: None,
             nmap_oA: None,
             nmap_target: Vec::new(),
+            node_id: None,
+            node_label: None,
+            node_provider: None,
+            node_latitude: None,
+            node_longitude: None,
         };
 
         // This will fail because we don't have proper network setup in test,

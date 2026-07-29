@@ -1,0 +1,11 @@
+{
+  "name": "ip-scan-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Standalone distributed frontend for ip-scan — connect to multiple scanner nodes, aggregate results, browse by map / service / IP family / per-node / results / scan control.",
+  "scripts": {
+    "serve": "node ../scripts/serve-frontend.mjs",
+    "start": "node ../scripts/serve-frontend.mjs"
+  },
+  "type": "module"
+}

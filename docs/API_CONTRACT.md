@@ -102,3 +102,33 @@ Web 控制台与扫描服务通过版本化 HTTP JSON API 对接。前端不依�
 ## 新增兼容服务端的要求
 
 只要实现上述 `/healthz`、`/system`、`/stats`、`/results`、`/services`、`/scan` 和 `/export` 契约，页面即可复用。服务端可以使用不同数据库、扫描调度器或部署地址，但不得改变字段含义；新增能力通过 `capabilities` 增加，不应要求旧前端调用未知接口。
+
+## 分布式 / 聚合接口
+
+分布式前端在每个节点上读下列聚合端点。跨节点合并在前端
+(`frontend/src/aggregator.js`) 完成，单节点调用也合法。
+
+| 端点 | 返回 |
+|------|------|
+| `GET /api/v1/stats/by-ip-family` | `{ ipv4_unique_ips, ipv6_unique_ips, ipv4_open_ports, ipv6_open_ports }` |
+| `GET /api/v1/stats/by-service` | `{ services: [{service_name, unique_ips, open_ports}], total_unique_ips }` |
+| `GET /api/v1/stats/by-category` | `{ categories: [{category, unique_ips}], total_unique_ips }` |
+| `GET /api/v1/map/locations?limit=N` | `{ locations: [{ip, ip_type, country, city, latitude, longitude, open_ports, top_service}], total, limit }` |
+
+`/system` 现在额外返回节点身份字段（用于跨节点聚合）：
+
+```json
+{
+  "node_id": "node-ali",
+  "node_label": "ali-shanghai",
+  "node_provider": "Aliyun",
+  "node_latitude": 31.2304,
+  "node_longitude": 121.4737,
+  "current_target_start": "1.0.0.0",
+  "current_target_end": "223.255.255.255"
+}
+```
+
+节点身份可通过 CLI（`--node-id` / `--node-label` / `--node-provider` /
+`--node-latitude` / `--node-longitude`）或 config.toml（`[node]` 段）注入；
+未提供时回落 `host:port`。

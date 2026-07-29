@@ -37,7 +37,19 @@ pub fn config_stats_routes(cfg: &mut web::ServiceConfig) {
                 "/changes/{round}/{port}",
                 web::get().to(handlers::get_bitmap_changes),
             )
-            .route("/top-ports", web::get().to(handlers::get_top_ports)),
+            .route("/top-ports", web::get().to(handlers::get_top_ports))
+            // Distributed / aggregation endpoints used by the standalone
+            // frontend. Kept under the same /stats scope so a single
+            // service block handles all stats traffic.
+            .route(
+                "/by-ip-family",
+                web::get().to(handlers::get_stats_by_ip_family),
+            )
+            .route("/by-service", web::get().to(handlers::get_stats_by_service))
+            .route(
+                "/by-category",
+                web::get().to(handlers::get_stats_by_category),
+            ),
     );
 }
 
@@ -71,6 +83,14 @@ pub fn config_service_routes(cfg: &mut web::ServiceConfig) {
     );
 }
 
+/// Configure distributed / aggregation routes used by the standalone
+/// frontend. Only /map is non-overlapping; the /stats aggregation routes
+/// live in config_stats_routes to avoid duplicate web::scope("/stats")
+/// blocks.
+pub fn config_distributed_routes(cfg: &mut web::ServiceConfig) {
+    cfg.service(web::scope("/map").route("/locations", web::get().to(handlers::get_map_locations)));
+}
+
 /// OpenAPI documentation
 #[derive(OpenApi)]
 #[openapi(
@@ -90,6 +110,10 @@ pub fn config_service_routes(cfg: &mut web::ServiceConfig) {
         handlers::export_csv,
         handlers::export_json,
         handlers::export_ndjson,
+        handlers::get_stats_by_ip_family,
+        handlers::get_stats_by_service,
+        handlers::get_stats_by_category,
+        handlers::get_map_locations,
     ),
     components(
         schemas(
@@ -110,6 +134,13 @@ pub fn config_service_routes(cfg: &mut web::ServiceConfig) {
             models::ServiceInfoResponse,
             models::IpServiceSummaryResponse,
             models::ServiceSummaryListResponse,
+            models::IpFamilyStatsResponse,
+            models::ServiceStatsResponse,
+            models::ServiceStatsEntry,
+            models::CategoryStatsResponse,
+            models::CategoryStatsEntry,
+            models::IpLocationResponse,
+            models::IpLocationsResponse,
             crate::dao::PortChange,
         )
     ),
@@ -120,6 +151,7 @@ pub fn config_service_routes(cfg: &mut web::ServiceConfig) {
         (name = "Scan Control", description = "Scan control endpoints"),
         (name = "Export", description = "Data export endpoints"),
         (name = "Services", description = "Service detection endpoints"),
+        (name = "Distributed", description = "Aggregation endpoints for the standalone distributed frontend"),
     )
 )]
 pub struct ApiDoc;

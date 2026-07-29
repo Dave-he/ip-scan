@@ -9,7 +9,7 @@ mod skill;
 
 use anyhow::Result;
 use clap::Parser;
-use tracing::{error, info, Level};
+use tracing::{debug, error, info, warn, Level};
 
 use cli::Args;
 use dao::SqliteDB;
@@ -247,6 +247,11 @@ async fn start_api_server(
     let controller_data = web::Data::new(scan_controller);
     let runtime_scan_data = web::Data::new(runtime_scan_state);
 
+    // Build the cluster node identity from the CLI flags / config and
+    // share it across all actix workers.
+    let node_identity = api::NodeIdentity::from_args(args, &args.api_host, args.api_port);
+    let node_data = web::Data::new(node_identity);
+
     // Get OpenAPI documentation
     let openapi = api::ApiDoc::openapi();
 
@@ -269,6 +274,7 @@ async fn start_api_server(
             .app_data(db_data.clone())
             .app_data(controller_data.clone())
             .app_data(runtime_scan_data.clone())
+            .app_data(node_data.clone())
             .configure(api::init_routes);
 
         if swagger_ui_enabled {
@@ -723,10 +729,18 @@ async fn run_scanner_logic(
             break;
         }
 
-        if let Ok(deleted) = db.cleanup_old_rounds(2) {
-            if deleted > 0 {
-                info!("Cleaned up {} old bitmap rows", deleted);
+        let max_rounds = args.max_rounds as i64;
+        if max_rounds > 0 {
+            match db.cleanup_old_rounds(max_rounds) {
+                Ok(deleted) if deleted > 0 => info!(
+                    "Pruned {} old bitmap row(s) (keeping the latest {})",
+                    deleted, max_rounds
+                ),
+                Ok(_) => {}
+                Err(e) => warn!("Bitmap prune failed: {e:?}"),
             }
+        } else {
+            debug!("--max-rounds=0: skipping bitmap pruning");
         }
 
         current_round = db.increment_round()?;

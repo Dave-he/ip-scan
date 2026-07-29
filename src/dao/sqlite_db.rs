@@ -196,6 +196,8 @@ impl SqliteDB {
         // Migrations for existing databases
         let migrations = [
             "ALTER TABLE ip_details ADD COLUMN reverse_dns TEXT",
+            "ALTER TABLE ip_details ADD COLUMN latitude REAL",
+            "ALTER TABLE ip_details ADD COLUMN longitude REAL",
             "ALTER TABLE service_info ADD COLUMN tls_not_before TEXT",
             "ALTER TABLE service_info ADD COLUMN tls_not_after TEXT",
             "ALTER TABLE service_info ADD COLUMN tls_version TEXT",
@@ -285,7 +287,7 @@ impl SqliteDB {
         let tx = conn.transaction()?;
         {
             let mut stmt = tx.prepare(
-                "INSERT INTO ip_details (ip_address, country, region, city, isp, asn, reverse_dns, source, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) ON CONFLICT(ip_address) DO UPDATE SET country=?2, region=?3, city=?4, isp=?5, asn=?6, reverse_dns=?7, source=?8, updated_at=?9"
+                "INSERT INTO ip_details (ip_address, country, region, city, isp, asn, reverse_dns, source, updated_at, latitude, longitude) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11) ON CONFLICT(ip_address) DO UPDATE SET country=?2, region=?3, city=?4, isp=?5, asn=?6, reverse_dns=?7, source=?8, updated_at=?9, latitude=COALESCE(?10, latitude), longitude=COALESCE(?11, longitude)"
             )?;
             let timestamp = Utc::now().to_rfc3339();
             for info in infos {
@@ -298,7 +300,9 @@ impl SqliteDB {
                     info.asn,
                     info.reverse_dns,
                     info.source,
-                    timestamp
+                    timestamp,
+                    info.latitude,
+                    info.longitude,
                 ])?;
             }
         }
@@ -311,7 +315,7 @@ impl SqliteDB {
         let conn = self.conn.lock().unwrap();
 
         let result = conn.query_row(
-            "SELECT ip_address, country, region, city, isp, asn, reverse_dns, source FROM ip_details WHERE ip_address = ?1",
+            "SELECT ip_address, country, region, city, isp, asn, reverse_dns, source, latitude, longitude FROM ip_details WHERE ip_address = ?1",
             [ip],
             |row| {
                 Ok(IpGeoInfo {
@@ -323,6 +327,8 @@ impl SqliteDB {
                     asn: row.get(5)?,
                     reverse_dns: row.get(6)?,
                     source: row.get(7)?,
+                    latitude: row.get(8)?,
+                    longitude: row.get(9)?,
                 })
             },
         ).optional()?;
@@ -422,6 +428,14 @@ impl SqliteDB {
             return Ok(());
         }
 
+        // Track whether any probe in this batch actually found an open port.
+        // last_scan_time is bumped only when we have a real discovery so we
+        // don't churn the scan_metadata table on every batch of closed ports
+        // (the dominant case in a TCP connect scan where most destinations
+        // do not respond). This keeps the semantics of last_scan_time aligned
+        // with what /api/v1/stats reports: "last time an open port was found".
+        let has_open = updates.iter().any(|(_, _, is_open)| *is_open);
+
         let mut conn = self.conn.lock().unwrap();
         let transaction = conn.transaction()?;
 
@@ -482,6 +496,23 @@ impl SqliteDB {
             }
         }
 
+        // 3. Bump last_scan_time on every batch that contained an open port.
+        // Inlined into the same transaction (rather than calling
+        // `save_metadata`) so we don't re-acquire `self.conn` while the
+        // mutex is held; `std::sync::Mutex` is not reentrant. Keeping it
+        // inside the transaction also guarantees atomicity: either the
+        // open_ports_detail inserts AND the metadata bump succeed, or
+        // neither do.
+        if has_open {
+            let now_meta = Utc::now().to_rfc3339();
+            transaction.execute(
+                "INSERT INTO scan_metadata (key, value, updated_at)
+                 VALUES ('last_scan_time', ?1, ?1)
+                 ON CONFLICT(key) DO UPDATE SET value = ?1, updated_at = ?1",
+                params![now_meta],
+            )?;
+        }
+
         transaction.commit()?;
         Ok(())
     }
@@ -520,6 +551,171 @@ impl SqliteDB {
         let (total, unique): (i64, i64) =
             stmt.query_row([], |row| Ok((row.get(0)?, row.get(1)?)))?;
         Ok((total as usize, unique as usize))
+    }
+
+    /// Aggregate scan results grouped by IP family (IPv4 vs IPv6).
+    /// Returns (ipv4_unique_ips, ipv6_unique_ips, ipv4_open_ports, ipv6_open_ports).
+    /// Useful for the IP-family view in the distributed frontend.
+    pub fn get_stats_by_ip_family(&self) -> Result<(usize, usize, usize, usize)> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT ip_type, COUNT(DISTINCT ip_address), COUNT(*)
+             FROM open_ports_detail
+             GROUP BY ip_type",
+        )?;
+        let mut ipv4_unique = 0usize;
+        let mut ipv6_unique = 0usize;
+        let mut ipv4_ports = 0usize;
+        let mut ipv6_ports = 0usize;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)? as usize,
+                row.get::<_, i64>(2)? as usize,
+            ))
+        })?;
+        for row in rows {
+            let (ip_type, unique, ports) = row?;
+            if ip_type == "IPv6" {
+                ipv6_unique = unique;
+                ipv6_ports = ports;
+            } else {
+                // Treat anything that isn't IPv6 as IPv4 — the scanner only
+                // emits those two labels today and historical rows match.
+                ipv4_unique = unique;
+                ipv4_ports = ports;
+            }
+        }
+        Ok((ipv4_unique, ipv6_unique, ipv4_ports, ipv6_ports))
+    }
+
+    /// Aggregate scan results grouped by service_name from the service_info
+    /// table. Returns service_name -> unique_ip_count + open_port_count.
+    /// Empty services (no banner / probe didn't run) are excluded.
+    pub fn get_stats_by_service(&self) -> Result<Vec<(String, usize, usize)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT
+                COALESCE(NULLIF(service_name, ''), 'unknown') AS service,
+                COUNT(DISTINCT ip_address),
+                COUNT(*)
+             FROM service_info
+             GROUP BY service
+             ORDER BY COUNT(DISTINCT ip_address) DESC, COUNT(*) DESC",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)? as usize,
+                    row.get::<_, i64>(2)? as usize,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Aggregate scan results grouped by the asset category reported by
+    /// `IpServiceSummary::categorize`. Empty IP sets are ignored.
+    pub fn get_stats_by_category(&self) -> Result<Vec<(String, usize)>> {
+        let conn = self.conn.lock().unwrap();
+        // Group by IP and reconstruct categories client-side from the
+        // services present in service_info. Doing it here keeps the
+        // single-statement aggregate cheap (one pass over service_info) and
+        // gives the frontend a faithful `web-server`, `database-server` etc.
+        // distribution without needing an extra stored column.
+        let mut stmt = conn.prepare(
+            "SELECT ip_address, service_name FROM service_info
+             WHERE service_name != ''",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut per_ip: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        for row in rows {
+            let (ip, svc) = row?;
+            per_ip.entry(ip).or_default().push(svc);
+        }
+        let mut counter: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+        for services in per_ip.values() {
+            let cat = crate::model::IpServiceSummary::categorize_from_names(services);
+            *counter.entry(cat).or_insert(0) += 1;
+        }
+        let mut out: Vec<(String, usize)> = counter.into_iter().collect();
+        out.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        Ok(out)
+    }
+
+    /// Return all IPs that have geo coordinates. The frontend uses this
+    /// for the map view. Limit bounds the response; callers should page if
+    /// the inventory exceeds the limit.
+    pub fn get_ip_locations(&self, limit: usize) -> Result<Vec<IpGeoInfo>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT ip_address, country, region, city, isp, asn, reverse_dns, source,
+                    latitude, longitude
+             FROM ip_details
+             WHERE latitude IS NOT NULL AND longitude IS NOT NULL
+             ORDER BY updated_at DESC
+             LIMIT ?1",
+        )?;
+        let rows = stmt
+            .query_map([limit as i64], |row| {
+                Ok(IpGeoInfo {
+                    ip: row.get(0)?,
+                    country: row.get(1)?,
+                    region: row.get(2)?,
+                    city: row.get(3)?,
+                    isp: row.get(4)?,
+                    asn: row.get(5)?,
+                    reverse_dns: row.get(6)?,
+                    source: row.get(7)?,
+                    latitude: row.get(8)?,
+                    longitude: row.get(9)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Count IPs that have geo coordinates attached. Drives the map marker
+    /// total in the distributed frontend.
+    pub fn count_ip_locations(&self) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM ip_details
+             WHERE latitude IS NOT NULL AND longitude IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(count as usize)
+    }
+
+    /// Aggregate open-port count + top service for one IP. Backs the map
+    /// marker tooltips in the distributed frontend.
+    pub fn get_ip_top_service(&self, ip: &str) -> Result<(usize, Option<String>)> {
+        let conn = self.conn.lock().unwrap();
+        let open_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM open_ports_detail WHERE ip_address = ?1",
+                [ip],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        let top_service: Option<String> = conn
+            .query_row(
+                "SELECT service_name FROM service_info
+                 WHERE ip_address = ?1 AND service_name != ''
+                 GROUP BY service_name
+                 ORDER BY COUNT(*) DESC
+                 LIMIT 1",
+                [ip],
+                |row| row.get(0),
+            )
+            .ok();
+        Ok((open_count as usize, top_service))
     }
 
     pub fn get_stats_by_port(&self, scan_round: i64) -> Result<Vec<(u16, usize)>> {
@@ -1332,5 +1528,60 @@ mod tests {
         assert_eq!(ip, "192.168.1.1");
         assert_eq!(ip_type, "IPv4");
         assert_eq!(round, 1);
+    }
+
+    /// `bulk_update_port_status` must bump `last_scan_time` whenever any
+    /// probe in the batch reports an open port. Closed-port-only batches
+    /// must NOT churn the metadata row, otherwise a TCP connect scan
+    /// (where most destinations time out / RST) would write metadata on
+    /// every batch and bury the actual discoveries.
+    #[test]
+    fn bulk_update_bumps_last_scan_time_only_on_open_hits() {
+        let db = SqliteDB::new(":memory:").unwrap();
+
+        // Seed a baseline discovery so `last_scan_time` resolves to a known
+        // value (without this row, `MAX(last_updated)` on port_bitmaps is
+        // NULL and `get_last_scan_time` returns None).
+        db.bulk_update_port_status(vec![("192.0.2.10".to_string(), 80, true)], 1)
+            .unwrap();
+        let baseline = db.get_last_scan_time().unwrap().expect("baseline");
+
+        // 1. Closed-port-only batch leaves last_scan_time untouched.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        db.bulk_update_port_status(vec![("192.0.2.11".to_string(), 80, false)], 1)
+            .unwrap();
+        assert_eq!(
+            db.get_last_scan_time().unwrap().as_deref(),
+            Some(baseline.as_str()),
+            "closed-port batch must not advance last_scan_time",
+        );
+
+        // 2. Batch with an open port advances last_scan_time past the baseline.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        db.bulk_update_port_status(
+            vec![
+                ("192.0.2.20".to_string(), 22, false),
+                ("192.0.2.21".to_string(), 443, true),
+            ],
+            1,
+        )
+        .unwrap();
+        let after_open = db.get_last_scan_time().unwrap().expect("set");
+        assert!(
+            after_open.as_str() > baseline.as_str(),
+            "last_scan_time must advance on an open-port hit (was {:?}, now {:?})",
+            baseline,
+            after_open,
+        );
+
+        // 3. Same batch again still bumps because the open row is re-upserted.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        db.bulk_update_port_status(vec![("192.0.2.21".to_string(), 443, true)], 1)
+            .unwrap();
+        let after_re = db.get_last_scan_time().unwrap().expect("set");
+        assert!(
+            after_re.as_str() >= after_open.as_str(),
+            "repeat open hit should not regress last_scan_time",
+        );
     }
 }

@@ -156,6 +156,31 @@ pub struct Args {
     #[arg(long, env = "SCAN_API_HOST", default_value = "0.0.0.0")]
     pub api_host: String,
 
+    /// Cluster node id (stable across restarts). Overrides the
+    /// `node.id` value in config.toml. Surfaced via /api/v1/system so the
+    /// distributed frontend can group results by source node.
+    #[arg(long, env = "SCAN_NODE_ID")]
+    pub node_id: Option<String>,
+
+    /// Cluster node label (e.g. "ali-shanghai"). Surfaces in the
+    /// distributed frontend as a human-readable name.
+    #[arg(long, env = "SCAN_NODE_LABEL")]
+    pub node_label: Option<String>,
+
+    /// Cluster node provider (e.g. "Aliyun", "Tencent", "Self-host").
+    #[arg(long, env = "SCAN_NODE_PROVIDER")]
+    pub node_provider: Option<String>,
+
+    /// Approximate latitude for this node (decimal degrees). Used by the
+    /// map view to place the cluster node marker.
+    #[arg(long, env = "SCAN_NODE_LATITUDE")]
+    pub node_latitude: Option<f64>,
+
+    /// Approximate longitude for this node (decimal degrees). Used by the
+    /// map view to place the cluster node marker.
+    #[arg(long, env = "SCAN_NODE_LONGITUDE")]
+    pub node_longitude: Option<f64>,
+
     /// Enable Swagger UI (default: true when API is enabled)
     #[arg(long, env = "SCAN_SWAGGER_UI", action = clap::ArgAction::SetTrue)]
     pub swagger_ui: bool,
@@ -239,6 +264,12 @@ pub struct Args {
     #[arg(long, env = "SCAN_ROUND_DELAY_MS", default_value = "0")]
     pub round_delay_ms: u64,
 
+    /// Maximum number of recent scan rounds to retain on disk. Older
+    /// `port_bitmaps` rows are pruned between rounds. Set to 0 to keep
+    /// the database growing forever (useful for archival sweeps).
+    #[arg(long, env = "SCAN_MAX_ROUNDS", default_value = "4", value_name = "N")]
+    pub max_rounds: u64,
+
     // === Nmap-compatible arguments ===
     /// SYN stealth scan (-sS)
     #[arg(long = "sS", help = "Nmap compat: SYN stealth scan")]
@@ -316,6 +347,27 @@ pub struct Args {
     pub nmap_target: Vec<String>,
 }
 
+#[derive(Debug, Deserialize, Clone)]
+pub struct NodeConfig {
+    /// Stable identifier for this scanner node in the cluster. The
+    /// distributed frontend groups results by this id and persists it
+    /// across restarts.
+    #[serde(default)]
+    pub id: Option<String>,
+    /// Human-readable label (e.g. "ali-shanghai", "tx-beijing").
+    #[serde(default)]
+    pub label: Option<String>,
+    /// Cloud / datacenter provider (e.g. "Aliyun", "Tencent", "Self-host").
+    #[serde(default)]
+    pub provider: Option<String>,
+    /// Approximate latitude of the node for the map view.
+    #[serde(default)]
+    pub latitude: Option<f64>,
+    /// Approximate longitude of the node for the map view.
+    #[serde(default)]
+    pub longitude: Option<f64>,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct Config {
     #[serde(default)]
@@ -325,6 +377,9 @@ pub struct Config {
     pub rate_limit: RateLimitConfig,
     #[serde(default)]
     pub api: ApiConfig,
+    /// Optional identity block for distributed / multi-server setups.
+    #[serde(default)]
+    pub node: Option<NodeConfig>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -887,6 +942,27 @@ impl Args {
             }
             if !self.swagger_ui {
                 self.swagger_ui = config.scan.swagger_ui;
+            }
+
+            // Apply cluster node identity from config.toml when CLI flags
+            // are not explicitly provided. CLI flags take precedence so an
+            // operator can override per-launch without editing the config.
+            if let Some(ref node_cfg) = config.node {
+                if self.node_id.is_none() {
+                    self.node_id = node_cfg.id.clone();
+                }
+                if self.node_label.is_none() {
+                    self.node_label = node_cfg.label.clone();
+                }
+                if self.node_provider.is_none() {
+                    self.node_provider = node_cfg.provider.clone();
+                }
+                if self.node_latitude.is_none() {
+                    self.node_latitude = node_cfg.latitude;
+                }
+                if self.node_longitude.is_none() {
+                    self.node_longitude = node_cfg.longitude;
+                }
             }
         } else {
             // Apply defaults when no config file is found

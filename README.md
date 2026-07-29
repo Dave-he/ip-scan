@@ -55,6 +55,31 @@ HTTP enrichment 使用 reqwest 0.12 / rustls 0.23。WHOIS 依赖链仍有待迁�
 
 只扫描明确授权的资产。默认建议跳过私网或限制到实验网段；不要把公网大范围扫描、Banner 探测或高并发作为默认行为。SYN、服务探测和 TLS/HTTP 请求可能被目标侧记录或拦截，请遵守法律、合同和组织策略。
 
+## 分布式前端（多服务器）
+
+把 `ip-scan` 部署到任意数量的服务器后，用 [`frontend/`](frontend/) 控制台连接它们：
+
+```bash
+# 1. 在每台扫描节点上启动 API（记得加身份）
+./ip-scan --api-only --node-id ali-sh --node-label "ali-shanghai" \
+    --node-latitude 31.23 --node-longitude 121.47 --api-port 9090
+./ip-scan --api-only --node-id tx-bj  --node-label "tx-beijing"  \
+    --node-latitude 39.90 --node-longitude 116.40 --api-port 9090
+
+# 2. 在任意机器上启动前端
+cd frontend && node ../scripts/serve-frontend.mjs 4000
+# 打开 http://localhost:4000，点 + 服务器 输入每个节点的 API 地址
+```
+
+前端会自动跨节点聚合结果，并提供 5+ 种浏览模式：
+- **总览**：集群规模、节点贡献热力图、TOP 服务
+- **地图视图**：全球地图 · 每点一个独立 IP · 点击查看端口与服务
+- **服务类型**：按 service_name（ssh / http / mysql / redis …）聚合
+- **IP 族**：IPv4 / IPv6 拆分 + 资产分类拆分
+- **节点列表 / 结果明细 / 扫描控制**
+
+完整说明见 [](docs/DISTRIBUTED.md)。
+
 ## 快速开始
 
 ```bash
@@ -142,6 +167,7 @@ curl http://127.0.0.1:9090/api-docs/openapi.json
 - 前后端协议契约：[`docs/API_CONTRACT.md`](docs/API_CONTRACT.md)
 - 数据字典：[`docs/DATA_DICTIONARY.md`](docs/DATA_DICTIONARY.md)
 - 运维与安全：[`docs/OPERATIONS.md`](docs/OPERATIONS.md)
+- 分布式多服务器前端：[`docs/DISTRIBUTED.md`](docs/DISTRIBUTED.md)
 - AI/自动化修改规则：[`AGENTS.md`](AGENTS.md)
 - 技能说明：[`SKILL_README.md`](SKILL_README.md)
 - 贡献指南：[`CONTRIBUTING.md`](CONTRIBUTING.md)

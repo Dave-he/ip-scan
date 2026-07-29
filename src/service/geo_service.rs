@@ -64,6 +64,17 @@ impl GeoService {
                             if !city.city.names.is_empty() {
                                 info.city = city.city.names.english.map(|s: &str| s.to_string());
                             }
+                            // maxminddb's geoip2::City.location is a struct
+                            // (not Option) — its inner latitude/longitude are
+                            // optional f64. Pull coords for the distributed
+                            // map view when present.
+                            let loc = &city.location;
+                            if let Some(lat) = loc.latitude {
+                                info.latitude = Some(lat);
+                            }
+                            if let Some(lng) = loc.longitude {
+                                info.longitude = Some(lng);
+                            }
 
                             return Ok(info);
                         }

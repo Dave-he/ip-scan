@@ -27,3 +27,16 @@ syn = false
 # throttling knob). Any positive value is packets-per-second.
 max_rate = 0
 window_duration = 1
+
+# Optional cluster / node identity block. The standalone distributed frontend
+# uses these fields to label the scanner node, place it on the map view, and
+# group results by source. All fields are optional; missing values fall back
+# to `api.host:api.port`. CLI flags (--node-id / --node-label / ...) take
+# precedence when provided.
+#
+# [node]
+# id = "node-ali"
+# label = "ali-shanghai"
+# provider = "Aliyun"
+# latitude = 31.2304
+# longitude = 121.4737

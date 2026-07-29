@@ -22,6 +22,7 @@
 | `asn` | ASN/Origin AS 线索 |
 | `reverse_dns` | PTR 主机名 |
 | `source` | `MaxMind`、`Whois` 或远程 API 等来源 |
+| `latitude` / `longitude` | 十进制度坐标（可选，由 GeoIP 源提供；分布式前端地图视图使用） |
 
 ## `service_info`
 

@@ -266,7 +266,10 @@ pub async fn get_health(db: web::Data<SqliteDB>) -> impl Responder {
     ),
     tag = "Operations"
 )]
-pub async fn get_system_info(db: web::Data<SqliteDB>) -> impl Responder {
+pub async fn get_system_info(
+    db: web::Data<SqliteDB>,
+    node: web::Data<crate::api::NodeIdentity>,
+) -> impl Responder {
     let (status, database) = match db.get_current_round() {
         Ok(_) => ("ready", "ok"),
         Err(_) => ("degraded", "error"),
@@ -287,6 +290,7 @@ pub async fn get_system_info(db: web::Data<SqliteDB>) -> impl Responder {
             "services.enrichment".to_string(),
             "visualization.ip-map".to_string(),
             "observability.prometheus".to_string(),
+            "distributed.cluster-node".to_string(),
         ],
         endpoints: vec![
             "/healthz".to_string(),
@@ -296,7 +300,18 @@ pub async fn get_system_info(db: web::Data<SqliteDB>) -> impl Responder {
             "/services".to_string(),
             "/scan".to_string(),
             "/export".to_string(),
+            "/stats/by-ip-family".to_string(),
+            "/stats/by-service".to_string(),
+            "/stats/by-category".to_string(),
+            "/map/locations".to_string(),
         ],
+        node_id: Some(node.id.clone()),
+        node_label: node.label.clone(),
+        node_provider: node.provider.clone(),
+        node_latitude: node.latitude,
+        node_longitude: node.longitude,
+        current_target_start: node.current_target_start.clone(),
+        current_target_end: node.current_target_end.clone(),
     };
     if status == "ready" {
         HttpResponse::Ok().json(response)
@@ -543,6 +558,7 @@ pub async fn start_scan(
         max_rate: 100000,
         rate_window_secs: 1,
         round_delay_ms: 0,
+        max_rounds: 4,
         nmap_sS: false,
         nmap_sT: false,
         nmap_sn: false,
@@ -561,6 +577,11 @@ pub async fn start_scan(
         nmap_oX: None,
         nmap_oA: None,
         nmap_target: Vec::new(),
+        node_id: None,
+        node_label: None,
+        node_provider: None,
+        node_latitude: None,
+        node_longitude: None,
     };
 
     // Get shared controller with async lock
@@ -1050,6 +1071,182 @@ pub async fn get_service_summaries(
             error!("Failed to get service summaries: {}", e);
             HttpResponse::InternalServerError().json(ErrorResponse {
                 error: "Failed to retrieve service summaries".to_string(),
+                code: Some("DATABASE_ERROR".to_string()),
+            })
+        }
+    }
+}
+
+/// Aggregate open-port records grouped by IP family (IPv4 vs IPv6).
+/// Lightweight endpoint used by the IP-family view in the distributed
+/// frontend.
+#[utoipa::path(
+    get,
+    path = "/api/v1/stats/by-ip-family",
+    responses(
+        (status = 200, description = "IPv4 vs IPv6 aggregate", body = IpFamilyStatsResponse),
+        (status = 500, description = "Database error", body = ErrorResponse),
+    ),
+    tag = "Distributed"
+)]
+pub async fn get_stats_by_ip_family(db: web::Data<SqliteDB>) -> impl Responder {
+    match db.get_stats_by_ip_family() {
+        Ok((ipv4_unique_ips, ipv6_unique_ips, ipv4_open_ports, ipv6_open_ports)) => {
+            HttpResponse::Ok().json(IpFamilyStatsResponse {
+                ipv4_unique_ips,
+                ipv6_unique_ips,
+                ipv4_open_ports,
+                ipv6_open_ports,
+            })
+        }
+        Err(e) => {
+            error!("Failed to get ip-family stats: {}", e);
+            HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Failed to retrieve ip-family stats".to_string(),
+                code: Some("DATABASE_ERROR".to_string()),
+            })
+        }
+    }
+}
+
+/// Aggregate open-port records grouped by detected service_name.
+/// The distributed frontend renders this as the "by service" view.
+#[utoipa::path(
+    get,
+    path = "/api/v1/stats/by-service",
+    responses(
+        (status = 200, description = "Per-service aggregate", body = ServiceStatsResponse),
+        (status = 500, description = "Database error", body = ErrorResponse),
+    ),
+    tag = "Distributed"
+)]
+pub async fn get_stats_by_service(db: web::Data<SqliteDB>) -> impl Responder {
+    match db.get_stats_by_service() {
+        Ok(rows) => {
+            let services: Vec<ServiceStatsEntry> = rows
+                .into_iter()
+                .map(|(service_name, unique_ips, open_ports)| ServiceStatsEntry {
+                    service_name,
+                    unique_ips,
+                    open_ports,
+                })
+                .collect();
+            let total_unique_ips = services.iter().map(|s| s.unique_ips).sum();
+            HttpResponse::Ok().json(ServiceStatsResponse {
+                services,
+                total_unique_ips,
+            })
+        }
+        Err(e) => {
+            error!("Failed to get service stats: {}", e);
+            HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Failed to retrieve service stats".to_string(),
+                code: Some("DATABASE_ERROR".to_string()),
+            })
+        }
+    }
+}
+
+/// Aggregate open-port records grouped by the asset category that
+/// `IpServiceSummary::categorize` derives from the detected services.
+/// Drives the asset-category donut / list in the distributed frontend.
+#[utoipa::path(
+    get,
+    path = "/api/v1/stats/by-category",
+    responses(
+        (status = 200, description = "Per-category aggregate", body = CategoryStatsResponse),
+        (status = 500, description = "Database error", body = ErrorResponse),
+    ),
+    tag = "Distributed"
+)]
+pub async fn get_stats_by_category(db: web::Data<SqliteDB>) -> impl Responder {
+    match db.get_stats_by_category() {
+        Ok(rows) => {
+            let categories: Vec<CategoryStatsEntry> = rows
+                .into_iter()
+                .map(|(category, unique_ips)| CategoryStatsEntry {
+                    category,
+                    unique_ips,
+                })
+                .collect();
+            let total_unique_ips = categories.iter().map(|c| c.unique_ips).sum();
+            HttpResponse::Ok().json(CategoryStatsResponse {
+                categories,
+                total_unique_ips,
+            })
+        }
+        Err(e) => {
+            error!("Failed to get category stats: {}", e);
+            HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Failed to retrieve category stats".to_string(),
+                code: Some("DATABASE_ERROR".to_string()),
+            })
+        }
+    }
+}
+
+/// Return geo-located IPs for the distributed frontend's map view. Limit
+/// caps the response size so a single fetch stays under a few hundred KB
+/// even when scanning thousands of hosts.
+#[utoipa::path(
+    get,
+    path = "/api/v1/map/locations",
+    params(
+        ("limit" = Option<usize>, Query, description = "Maximum IPs to return (default: 1000, max: 10000)")
+    ),
+    responses(
+        (status = 200, description = "Geo-located IPs", body = IpLocationsResponse),
+        (status = 500, description = "Database error", body = ErrorResponse),
+    ),
+    tag = "Distributed"
+)]
+pub async fn get_map_locations(
+    db: web::Data<SqliteDB>,
+    query: web::Query<crate::api::models::TopPortsQuery>,
+) -> impl Responder {
+    let limit = query.limit.unwrap_or(1000).clamp(1, 10_000);
+    match db.get_ip_locations(limit) {
+        Ok(locations) => {
+            // Augment each location with the open-port count and the most
+            // common service_name (cheap GROUP BY using existing indexes).
+            let mut augmented: Vec<IpLocationResponse> = Vec::with_capacity(locations.len());
+            let conn_total = match db.get_stats() {
+                Ok(_) => 0usize, // placeholder so the borrow ends before conn re-acquire
+                Err(_) => 0,
+            };
+            let _ = conn_total;
+            for loc in locations {
+                let (open_ports, top_service) = match db.get_ip_top_service(&loc.ip) {
+                    Ok((c, s)) => (c, s),
+                    Err(_) => (0, None),
+                };
+                let ip_type = if loc.ip.contains(':') {
+                    Some("IPv6".to_string())
+                } else {
+                    Some("IPv4".to_string())
+                };
+                augmented.push(IpLocationResponse {
+                    ip: loc.ip,
+                    ip_type,
+                    country: loc.country,
+                    city: loc.city,
+                    latitude: loc.latitude.unwrap_or(0.0),
+                    longitude: loc.longitude.unwrap_or(0.0),
+                    open_ports,
+                    top_service,
+                });
+            }
+            let total = db.count_ip_locations().unwrap_or(augmented.len());
+            HttpResponse::Ok().json(IpLocationsResponse {
+                locations: augmented,
+                total,
+                limit,
+            })
+        }
+        Err(e) => {
+            error!("Failed to get map locations: {}", e);
+            HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Failed to retrieve map locations".to_string(),
                 code: Some("DATABASE_ERROR".to_string()),
             })
         }

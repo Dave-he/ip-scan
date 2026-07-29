@@ -103,6 +103,29 @@ pub struct SystemInfoResponse {
     pub server_time: String,
     pub capabilities: Vec<String>,
     pub endpoints: Vec<String>,
+    /// Stable cluster node id (so a distributed frontend can group results
+    /// by source). Falls back to the listen host:port if unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub node_id: Option<String>,
+    /// Human-readable node label (e.g. "ali-shanghai").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub node_label: Option<String>,
+    /// Cloud / hosting provider.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub node_provider: Option<String>,
+    /// Approximate node latitude (decimal degrees) for the map view.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub node_latitude: Option<f64>,
+    /// Approximate node longitude (decimal degrees) for the map view.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub node_longitude: Option<f64>,
+    /// Currently configured scan target range (start_ip..end_ip) when a
+    /// CLI-managed scan is running. Useful for the distributed frontend to
+    /// label which node is sweeping what range.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_target_start: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_target_end: Option<String>,
 }
 
 /// Statistics response
@@ -344,4 +367,65 @@ pub struct ServiceSummaryListResponse {
     pub total: usize,
     pub page: usize,
     pub page_size: usize,
+}
+
+/// Aggregate stats grouped by IP family. The distributed frontend uses this
+/// to render the IPv4 vs IPv6 split view.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct IpFamilyStatsResponse {
+    pub ipv4_unique_ips: usize,
+    pub ipv6_unique_ips: usize,
+    pub ipv4_open_ports: usize,
+    pub ipv6_open_ports: usize,
+}
+
+/// Aggregate stats grouped by detected service_name (e.g. ssh, http, redis).
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct ServiceStatsEntry {
+    pub service_name: String,
+    pub unique_ips: usize,
+    pub open_ports: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct ServiceStatsResponse {
+    pub services: Vec<ServiceStatsEntry>,
+    pub total_unique_ips: usize,
+}
+
+/// Aggregate stats grouped by asset category (web-server, database-server, …).
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct CategoryStatsEntry {
+    pub category: String,
+    pub unique_ips: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct CategoryStatsResponse {
+    pub categories: Vec<CategoryStatsEntry>,
+    pub total_unique_ips: usize,
+}
+
+/// Compact geo-located IP for the map view. Lightly trimmed to keep
+/// individual responses small even when paginating thousands of markers.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct IpLocationResponse {
+    pub ip: String,
+    pub ip_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub country: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub city: Option<String>,
+    pub latitude: f64,
+    pub longitude: f64,
+    pub open_ports: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_service: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct IpLocationsResponse {
+    pub locations: Vec<IpLocationResponse>,
+    pub total: usize,
+    pub limit: usize,
 }
