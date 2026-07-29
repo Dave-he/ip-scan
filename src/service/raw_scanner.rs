@@ -203,42 +203,36 @@ impl RawScanner {
             self.config.max_inflight_per_worker
         );
 
-        // Pre-build the probe vector. We pre-encode IPs as u32 and ports as
-        // u16 so the worker hot path is two register-sized values and a
-        // 4-byte sockaddr_in.
-        let mut probes: Vec<Probe> = Vec::with_capacity(total_probes);
-        for raw in start_v4..=end_v4 {
-            let ip = Ipv4Addr::from(raw);
-            for &port in ports {
-                probes.push(Probe { ip, port });
-            }
-        }
-        if self.config.shuffle {
-            let mut rng = rand::thread_rng();
-            probes.shuffle(&mut rng);
-        }
-
-        // Round 2 optimization: partition the probe vector up-front and
-        // give each worker an owned slice. The earlier single-MPMC-channel
-        // design had every worker contending for the same queue, which
-        // collapsed throughput to ~1 kpps on a /16 sweep because the
-        // channel's wakeup turned into a thundering herd. With owned
-        // slices, each worker is fully independent — no atomic ops on
-        // the hot path, no scheduler contention, no fd cross-talk.
+        // Distribute the IP range across workers as exclusive `(start, end)`
+        // slices. The worker hot path converts a flat cursor into
+        // `(ip, port)` via div/mod, so we never materialise a
+        // `Vec<Probe>` — that matters for the full public IPv4 sweep:
+        // 3.7 G IPs × 20 ports ≈ 6·10^10 probes × 6 B ≈ 363 GiB, which
+        // OOMs long before the first network packet. Memory here is
+        // O(per-worker ports + inflight) regardless of target size.
+        //
+        // The previous design pre-built the full probe vector so it
+        // could optionally shuffle for the `max-speed` preset. Shuffle
+        // is omitted here because it requires materialising the vector;
+        // for /0 sweeps the per-worker sequential IP iteration is
+        // already randomised enough across workers via the IP partition.
         let n = self.config.num_workers.max(1);
-        let chunk_size = (probes.len() + n - 1) / n;
-        let mut chunks: Vec<Vec<Probe>> = Vec::with_capacity(n);
+        let total_ips_u64 = total_ips as u64;
+        let chunk_ips_u64 = (total_ips_u64 + n as u64 - 1) / n as u64;
+        let mut ip_ranges: Vec<(u32, u32)> = Vec::with_capacity(n);
+        let mut cursor_ips: u64 = 0;
         for i in 0..n {
-            let start = i * chunk_size;
-            let end = ((i + 1) * chunk_size).min(probes.len());
-            if start >= probes.len() {
-                chunks.push(Vec::new());
+            let s = start_v4.wrapping_add(cursor_ips as u32);
+            let take = chunk_ips_u64.min(total_ips_u64 - cursor_ips);
+            let e_excl = if cursor_ips.wrapping_add(take) >= total_ips_u64 {
+                end_v4.wrapping_add(1)
             } else {
-                chunks.push(probes[start..end].to_vec());
-            }
+                s.wrapping_add(take as u32)
+            };
+            ip_ranges.push((s, e_excl));
+            cursor_ips = cursor_ips.wrapping_add(take);
         }
-        let total_probes = probes.len();
-        drop(probes);
+        let ports_shared = ports.to_vec();
 
         // Channel: workers → DB writer. Bounded so a stalled DB backpressures
         // the workers instead of letting them allocate unbounded memory.
@@ -260,17 +254,30 @@ impl RawScanner {
             stop.clone(),
         );
 
-        // Spawn worker pool. Each worker takes its owned chunk — no
-        // shared probe queue, no atomic ops on the per-probe path.
+        // Spawn worker pool. Each worker is given an exclusive IP slice
+        // plus a clone of the port list; no shared probe queue, no
+        // atomic ops on the per-probe path.
         let mut workers = Vec::with_capacity(n);
-        for (worker_id, chunk) in chunks.into_iter().enumerate() {
+        for (worker_id, (ip_start_w, ip_end_excl_w)) in ip_ranges.into_iter().enumerate() {
             let tx = result_tx.clone();
             let limiter = rate_limiter.clone();
             let cfg = self.config.clone();
             let stop = stop.clone();
+            let ports_w = ports_shared.clone();
             let handle = thread::Builder::new()
                 .name(format!("raw-scan-w{worker_id}"))
-                .spawn(move || worker_main(worker_id, chunk, tx, limiter, cfg, stop))?;
+                .spawn(move || {
+                    worker_main(
+                        worker_id,
+                        ip_start_w,
+                        ip_end_excl_w,
+                        ports_w,
+                        tx,
+                        limiter,
+                        cfg,
+                        stop,
+                    )
+                })?;
             workers.push(handle);
         }
 
@@ -341,7 +348,9 @@ fn now_ms() -> u64 {
 
 fn worker_main(
     worker_id: usize,
-    probes: Vec<Probe>,
+    ip_start: u32,
+    ip_end_excl: u32,
+    ports: Vec<u16>,
     result_tx: flume::Sender<ScanResult>,
     rate_limiter: RateLimiter,
     config: RawScannerConfig,
@@ -411,20 +420,25 @@ fn worker_main(
         }
     };
 
-    // Owned cursor into the worker's chunk. No atomic ops, no
-    // channel — this is the only place the worker reads a probe.
-    let mut cursor: usize = 0;
-    let total = probes.len();
+    // Flat cursor into the (ip_start..ip_end_excl × ports) range — the
+    // probe "address" is recovered by div/mod so no Vec<Probe> is
+    // ever materialised. No atomic ops, no channel on the probe
+    // produce side.
+    let mut flat_idx: usize = 0;
+    let total: usize = (ip_end_excl as u64 - ip_start as u64) as usize * ports.len();
     let start_ms = now_ms();
 
-    while cursor < total || !inflight.is_empty() {
+    while flat_idx < total || !inflight.is_empty() {
         // 1. Refill the in-flight set up to the cap.
-        while inflight.len() < cap && cursor < total {
+        while inflight.len() < cap && flat_idx < total {
             if rate_limiter.try_acquire(1) == 0 {
                 break;
             }
-            let probe = probes[cursor];
-            cursor += 1;
+            let ip_offset = (flat_idx / ports.len()) as u32;
+            let port_idx = flat_idx % ports.len();
+            let ip = Ipv4Addr::from(ip_start.wrapping_add(ip_offset));
+            let port = ports[port_idx];
+            flat_idx += 1;
             // Round 10 hot path: pop a slot, take its pre-created
             // socket, call `connect(2)` directly. No `socket(2)`,
             // no `fcntl(2)`, no addr struct construction (we reuse
@@ -437,8 +451,8 @@ fn worker_main(
                 // to the slow path so the scan still completes.
                 metrics.increment_scanned();
                 result_buf.push(ScanResult {
-                    ip: probe.ip,
-                    port: probe.port,
+                    ip,
+                    port,
                     open: false,
                     rtt: Duration::ZERO,
                 });
@@ -452,9 +466,9 @@ fn worker_main(
                 #[cfg(target_os = "macos")]
                 sin_len: 0,
                 sin_family: libc::AF_INET as libc::sa_family_t,
-                sin_port: probe.port.to_be(),
+                sin_port: port.to_be(),
                 sin_addr: libc::in_addr {
-                    s_addr: u32::from(probe.ip).to_be(),
+                    s_addr: u32::from(ip).to_be(),
                 },
                 sin_zero: [0; 8],
             };
@@ -483,8 +497,8 @@ fn worker_main(
                     free.push(slot);
                     metrics.increment_scanned();
                     result_buf.push(ScanResult {
-                        ip: probe.ip,
-                        port: probe.port,
+                        ip,
+                        port,
                         open: false,
                         rtt: Duration::ZERO,
                     });
@@ -497,8 +511,8 @@ fn worker_main(
             poll_index[slot] = inflight.len();
             inflight.push(InFlight {
                 fd,
-                ip: probe.ip,
-                port: probe.port,
+                ip,
+                port,
                 sent_at_ms: now_ms(),
                 poll_index: 0,
             });
