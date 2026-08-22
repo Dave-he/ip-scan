@@ -40,3 +40,18 @@ window_duration = 1
 # provider = "Aliyun"
 # latitude = 31.2304
 # longitude = 121.4737
+
+# Bandwidth benchmark mode (--bench-bandwidth). Only consulted when the
+# flag is set; all fields are optional and merge with the corresponding
+# CLI flag (CLI wins when both are present).
+#
+# [bench]
+# concurrency = 100            # in-flight GETs per round
+# bytes_per_target = 1048576   # 1 MiB per Range request
+# rounds = 5
+# min_rounds = 3
+# stop_cv_throughput = 0.10    # CV(bw) over the last 3 rounds
+# stop_cv_rtt = 0.15           # CV(rtt) over the last 3 rounds
+# timeout_secs = 10
+# output_dir = "results/bandwidth"
+# domain_file = "lists/cn_top_1000.csv"

@@ -1,4 +1,5 @@
 mod api;
+mod bench;
 mod cli;
 mod dao;
 mod error;
@@ -9,14 +10,19 @@ mod skill;
 
 use anyhow::Result;
 use clap::Parser;
+use std::path::PathBuf;
 use tracing::{debug, error, info, warn, Level};
 
 use cli::Args;
 use dao::SqliteDB;
+use service::BenchTarget;
 use service::GeoService;
 
 fn main() -> Result<()> {
     let args = Args::parse().merge_with_config()?;
+    if args.bench_bandwidth {
+        return run_bandwidth_benchmark(&args);
+    }
     if args.dry_run {
         return print_scan_plan(&args);
     }
@@ -842,4 +848,170 @@ fn write_nmap_outputs(db: &SqliteDB, args: &cli::Args) {
             }
         }
     }
+}
+
+/// Top-level entry for `--bench-bandwidth`.
+///
+/// Loads the domain list (from `--bench-domain-file` or the bundled
+/// `lists/cn_top_1000.csv`), constructs a [`BandwidthProber`], drives
+/// `run_until_stable`, and on each round writes per-round JSONL +
+/// batched CSV/SQLite + a Markdown summary. Exits once the stability
+/// rule fires or `cfg.rounds` is reached.
+fn run_bandwidth_benchmark(args: &Args) -> Result<()> {
+    use crate::bench::{
+        write_bandwidth_csv, write_bandwidth_jsonl, write_bandwidth_markdown_summary,
+    };
+    use crate::service::{BandwidthProber, BenchConfig};
+    use chrono::Local;
+    use std::path::PathBuf;
+
+    tracing_subscriber::fmt()
+        .with_max_level(if args.verbose {
+            Level::DEBUG
+        } else {
+            Level::INFO
+        })
+        .with_target(false)
+        .init();
+
+    let domain_file = args
+        .bench_domain_file
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("lists/cn_top_1000.csv"));
+    let targets = load_domain_list(&domain_file)?;
+    info!(
+        "bandwidth-bench: loaded {} domains from {}",
+        targets.len(),
+        domain_file.display()
+    );
+
+    let node_id = args
+        .node_id
+        .clone()
+        .unwrap_or_else(|| "local".to_string());
+    let date_str = Local::now().format("%Y-%m-%d").to_string();
+    let output_root = args
+        .bench_output_dir
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("results/bandwidth"));
+    let output_dir = output_root.join(&node_id).join(&date_str);
+    std::fs::create_dir_all(&output_dir)?;
+    info!("bandwidth-bench: writing reports to {}", output_dir.display());
+
+    let cfg = BenchConfig {
+        concurrency: args.bench_concurrency,
+        bytes_per_target: args.bench_bytes,
+        rounds: args.bench_rounds,
+        min_rounds: args.bench_min_rounds,
+        stop_cv_throughput: args.bench_stop_cv_throughput,
+        stop_cv_rtt: args.bench_stop_cv_rtt,
+        timeout_secs: args.bench_timeout,
+        output_dir: output_dir.clone(),
+        node_id: node_id.clone(),
+        attempts_per_target: 1,
+    };
+
+    let prober = BandwidthProber::new(cfg)?;
+    let db = SqliteDB::new(&args.database)?;
+    let all_samples = std::sync::Arc::new(std::sync::Mutex::new(Vec::<
+        crate::model::BandwidthSample,
+    >::new()));
+
+    let on_round = {
+        let output_dir = output_dir.clone();
+        let node_id = node_id.clone();
+        let all_samples = all_samples.clone();
+        let db = db.clone();
+        move |round: u32, samples: &[crate::model::BandwidthSample]| {
+            let jsonl_path = output_dir.join(format!("bench-r{round}.jsonl.gz"));
+            if let Err(e) = write_bandwidth_jsonl(&jsonl_path, samples, &node_id) {
+                error!("write jsonl failed: {e}");
+            } else {
+                info!("wrote {}", jsonl_path.display());
+            }
+            if let Err(e) = db.save_bandwidth_samples(samples) {
+                error!("sqlite insert failed: {e}");
+            }
+            all_samples.lock().unwrap().extend_from_slice(samples);
+        }
+    };
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(
+            args.worker_threads
+                .unwrap_or_else(|| std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4)),
+        )
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let summary = rt.block_on(async { prober.run_until_stable(&targets, on_round).await });
+
+    let samples = all_samples.lock().unwrap().clone();
+    let csv_path = output_dir.join("bench.csv");
+    if let Err(e) = write_bandwidth_csv(&csv_path, &samples, &node_id) {
+        error!("write csv failed: {e}");
+    } else {
+        info!("wrote {}", csv_path.display());
+    }
+    let md_path = output_dir.join("bench-summary.md");
+    let title = format!(
+        "ip-scan bandwidth benchmark — {} rounds — node `{}`",
+        summary.rounds_run, summary.node_id
+    );
+    if let Err(e) = write_bandwidth_markdown_summary(&md_path, &samples, &title) {
+        error!("write md failed: {e}");
+    } else {
+        info!("wrote {}", md_path.display());
+    }
+
+    info!("bandwidth-bench summary: {:?}", summary);
+    Ok(())
+}
+
+/// Parse the `rank,domain,category` CSV. Empty lines and `#` comments
+/// are ignored. Falls back to `https://domain:443` when the port
+/// column is missing (the bundled list never has it, so 443 is the
+/// safe default).
+fn load_domain_list(path: &PathBuf) -> Result<Vec<BenchTarget>> {
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| anyhow::anyhow!("read {}: {}", path.display(), e))?;
+    let mut out = Vec::new();
+    let mut header_seen = false;
+    for (idx, line) in content.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if !header_seen {
+            header_seen = true;
+            continue;
+        }
+        let parts: Vec<&str> = line.split(',').collect();
+        if parts.len() < 2 {
+            warn!(
+                "skipping malformed domain CSV line {}: {:?}",
+                idx + 1,
+                line
+            );
+            continue;
+        }
+        let domain = parts[1].trim().to_string();
+        if domain.is_empty() {
+            continue;
+        }
+        let category = parts.get(2).map(|s| s.trim().to_string()).unwrap_or_default();
+        out.push(BenchTarget {
+            domain,
+            port: 443,
+            category,
+        });
+    }
+    if out.is_empty() {
+        return Err(anyhow::anyhow!(
+            "no usable domains in {}",
+            path.display()
+        ));
+    }
+    Ok(out)
 }

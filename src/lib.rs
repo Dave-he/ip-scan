@@ -6,6 +6,7 @@
 //! outside the binary.
 
 pub mod api;
+pub mod bench;
 pub mod cli;
 pub mod dao;
 pub mod model;

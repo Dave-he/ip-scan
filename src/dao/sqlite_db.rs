@@ -1,5 +1,6 @@
 use crate::model::{
-    index_to_ipv4, ipv4_to_index, IpGeoInfo, IpServiceSummary, PortBitmap, ServiceInfo, TcpSnapshot,
+    index_to_ipv4, ipv4_to_index, BandwidthSample, IpGeoInfo, IpServiceSummary, PortBitmap,
+    ServiceInfo, TcpSnapshot,
 };
 use anyhow::Result;
 use chrono::Utc;
@@ -190,6 +191,50 @@ impl SqliteDB {
 
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_tcp_snapshots_purpose ON tcp_snapshots(purpose)",
+            [],
+        )?;
+
+        // Bandwidth benchmark samples (one row per (target, round, attempt)).
+        // Populated by `--bench-bandwidth` and read back by the per-domain
+        // rollup endpoint. Mirrors the columns of `BandwidthSample` so the
+        // `bench-summary` writer can be replaced with a SQL query.
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS bandwidth_samples (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts TEXT NOT NULL,
+                node_id TEXT,
+                round INTEGER NOT NULL,
+                attempt INTEGER NOT NULL,
+                target TEXT NOT NULL,
+                ip TEXT,
+                port INTEGER NOT NULL,
+                dns_ms REAL,
+                tcp_ms REAL,
+                ttfb_ms REAL,
+                transfer_ms REAL,
+                total_ms REAL NOT NULL,
+                bytes INTEGER NOT NULL,
+                throughput_mbps REAL NOT NULL,
+                http_status INTEGER,
+                server TEXT,
+                via TEXT,
+                content_encoding TEXT,
+                accept_ranges TEXT,
+                range_ok INTEGER NOT NULL,
+                error TEXT
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_bandwidth_target ON bandwidth_samples(target)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_bandwidth_round ON bandwidth_samples(round)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_bandwidth_node ON bandwidth_samples(node_id)",
             [],
         )?;
 
@@ -1230,6 +1275,51 @@ impl SqliteDB {
                     snap.detected_technologies,
                     snap.purpose,
                     snap.captured_at,
+                ])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Persist one round of bandwidth samples in a single transaction.
+    /// Driven by `ip-scan --bench-bandwidth`. No `ON CONFLICT` clause —
+    /// each (round, attempt) is a distinct measurement event, so
+    /// re-running inserts rather than upserts.
+    pub fn save_bandwidth_samples(&self, samples: &[BandwidthSample]) -> Result<()> {
+        if samples.is_empty() {
+            return Ok(());
+        }
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO bandwidth_samples \
+                 (ts, round, attempt, target, ip, port, dns_ms, tcp_ms, ttfb_ms, transfer_ms, total_ms, bytes, throughput_mbps, http_status, server, via, content_encoding, accept_ranges, range_ok, error) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
+            )?;
+            for s in samples {
+                stmt.execute(params![
+                    s.ts,
+                    s.round,
+                    s.attempt,
+                    s.target,
+                    s.ip,
+                    s.port,
+                    s.dns_ms,
+                    s.tcp_ms,
+                    s.ttfb_ms,
+                    s.transfer_ms,
+                    s.total_ms,
+                    s.bytes as i64,
+                    s.throughput_mbps,
+                    s.http_status.map(|v| v as i64),
+                    s.server,
+                    s.via,
+                    s.content_encoding,
+                    s.accept_ranges,
+                    s.range_ok as i64,
+                    s.error,
                 ])?;
             }
         }

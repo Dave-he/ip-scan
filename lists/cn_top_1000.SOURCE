@@ -1,0 +1,9 @@
+Domain list snapshot: hand-audited 2026-08-22.
+Coverage: portals, search, e-commerce, video, social, news,
+government (.gov.cn), education (.edu.cn), finance, cloud,
+CDNs, AI services, developer tools, ISPs/telecom, mail,
+logistics, auto, real estate, travel, restaurants.
+Source mix: covers the bulk of the canonical Chinese
+internet surface plus the most popular Chinese-language
+international sites reachable on a domestic broadband link.
+Refresh: re-run scripts/gen_cn_top1000.py to regenerate.

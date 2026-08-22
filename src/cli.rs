@@ -345,6 +345,77 @@ pub struct Args {
     /// Positional nmap target arguments (e.g., IP ranges)
     #[arg(hide = true)]
     pub nmap_target: Vec<String>,
+
+    // === Bandwidth benchmark mode ===
+    /// Enable end-to-end bandwidth benchmarking mode. Each round
+    /// issues one HTTP Range GET per target domain, recording DNS,
+    /// TCP, TTFB, transfer and throughput. Stops automatically when
+    /// the per-round median throughput and RTT stay within a CV band
+    /// for three consecutive rounds (or after `--bench-rounds`).
+    #[arg(long, env = "SCAN_BENCH_BANDWIDTH")]
+    pub bench_bandwidth: bool,
+
+    /// Path to a CSV file with the target domain list. Columns:
+    /// `rank,domain,category`. Defaults to the bundled
+    /// `lists/cn_top_1000.csv` when omitted.
+    #[arg(long, env = "SCAN_BENCH_DOMAIN_FILE", value_name = "FILE")]
+    pub bench_domain_file: Option<PathBuf>,
+
+    /// Number of in-flight probes during a round (per-target HTTP
+    /// GETs). Tune to your upstream bandwidth — 100 fits a 100 Mbps
+    /// link with 1 MiB per target.
+    #[arg(
+        long,
+        env = "SCAN_BENCH_CONCURRENCY",
+        default_value = "100",
+        value_parser = parse_positive_usize
+    )]
+    pub bench_concurrency: usize,
+
+    /// Bytes requested per target via the `Range:` header. 1 MiB
+    /// gives slow-start enough RTTs to grow on a 50 ms link while
+    /// keeping the per-round bandwidth cost bounded.
+    #[arg(
+        long,
+        env = "SCAN_BENCH_BYTES",
+        default_value = "1048576",
+        value_parser = parse_positive_u64
+    )]
+    pub bench_bytes: u64,
+
+    /// Maximum number of rounds to run. The stability rule fires
+    /// earlier when the network is steady.
+    #[arg(long, env = "SCAN_BENCH_ROUNDS", default_value = "5")]
+    pub bench_rounds: u32,
+
+    /// Never consider stopping before this many rounds. Three is
+    /// the smallest window over which a CV is meaningful.
+    #[arg(long, env = "SCAN_BENCH_MIN_ROUNDS", default_value = "3")]
+    pub bench_min_rounds: u32,
+
+    /// CV threshold on the per-round median throughput for the
+    /// stability rule. 0.10 = 10 % per-round variation allowed.
+    #[arg(
+        long,
+        env = "SCAN_BENCH_STOP_CV_THROUGHPUT",
+        default_value = "0.10"
+    )]
+    pub bench_stop_cv_throughput: f64,
+
+    /// CV threshold on the per-round median RTT for the stability
+    /// rule. 0.15 = 15 % per-round variation allowed.
+    #[arg(long, env = "SCAN_BENCH_STOP_CV_RTT", default_value = "0.15")]
+    pub bench_stop_cv_rtt: f64,
+
+    /// Per-request timeout in seconds (connect, TLS, read).
+    #[arg(long, env = "SCAN_BENCH_TIMEOUT", default_value = "10")]
+    pub bench_timeout: u64,
+
+    /// Directory for per-round JSONL, CSV and Markdown reports.
+    /// Created if missing. Final structure:
+    /// `<dir>/<node_id>/<YYYY-MM-DD>/`.
+    #[arg(long, env = "SCAN_BENCH_OUTPUT_DIR", value_name = "DIR")]
+    pub bench_output_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -380,6 +451,27 @@ pub struct Config {
     /// Optional identity block for distributed / multi-server setups.
     #[serde(default)]
     pub node: Option<NodeConfig>,
+    /// Optional bandwidth-benchmark block. Only consulted when
+    /// `--bench-bandwidth` is set; all fields are optional so the
+    /// block may be empty.
+    #[serde(default)]
+    pub bench: BenchConfigToml,
+}
+
+/// TOML-facing defaults for the `[bench]` block. All fields use
+/// `#[serde(default = "...")]` so a config file can include only the
+/// overrides it cares about. CLI flags always win over these values.
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct BenchConfigToml {
+    pub concurrency: Option<usize>,
+    pub bytes_per_target: Option<u64>,
+    pub rounds: Option<u32>,
+    pub min_rounds: Option<u32>,
+    pub stop_cv_throughput: Option<f64>,
+    pub stop_cv_rtt: Option<f64>,
+    pub timeout_secs: Option<u64>,
+    pub output_dir: Option<String>,
+    pub domain_file: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -964,6 +1056,49 @@ impl Args {
                     self.node_longitude = node_cfg.longitude;
                 }
             }
+
+            // [bench] block: only fills fields the CLI left at default.
+            if let Some(c) = config.bench.concurrency {
+                if self.bench_concurrency == 100 {
+                    self.bench_concurrency = c;
+                }
+            }
+            if let Some(c) = config.bench.bytes_per_target {
+                if self.bench_bytes == 1048576 {
+                    self.bench_bytes = c;
+                }
+            }
+            if let Some(c) = config.bench.rounds {
+                if self.bench_rounds == 5 {
+                    self.bench_rounds = c;
+                }
+            }
+            if let Some(c) = config.bench.min_rounds {
+                if self.bench_min_rounds == 3 {
+                    self.bench_min_rounds = c;
+                }
+            }
+            if let Some(c) = config.bench.stop_cv_throughput {
+                self.bench_stop_cv_throughput = c;
+            }
+            if let Some(c) = config.bench.stop_cv_rtt {
+                self.bench_stop_cv_rtt = c;
+            }
+            if let Some(c) = config.bench.timeout_secs {
+                if self.bench_timeout == 10 {
+                    self.bench_timeout = c;
+                }
+            }
+            if let Some(c) = config.bench.output_dir {
+                if self.bench_output_dir.is_none() {
+                    self.bench_output_dir = Some(PathBuf::from(c));
+                }
+            }
+            if let Some(c) = config.bench.domain_file {
+                if self.bench_domain_file.is_none() {
+                    self.bench_domain_file = Some(PathBuf::from(c));
+                }
+            }
         } else {
             // Apply defaults when no config file is found
             if !self.loop_mode {
@@ -1067,6 +1202,41 @@ impl Args {
 
         if self.output_format != "text" && self.output_format != "json" {
             return Err(anyhow::anyhow!("Output format must be 'text' or 'json'"));
+        }
+
+        // Bandwidth bench validation. Only enforced when the mode is
+        // actually requested so the existing scanner path is untouched.
+        if self.bench_bandwidth {
+            if self.bench_concurrency == 0 {
+                return Err(anyhow::anyhow!("--bench-concurrency must be greater than 0"));
+            }
+            if self.bench_bytes == 0 {
+                return Err(anyhow::anyhow!("--bench-bytes must be greater than 0"));
+            }
+            if self.bench_rounds == 0 {
+                return Err(anyhow::anyhow!("--bench-rounds must be greater than 0"));
+            }
+            if self.bench_min_rounds == 0 {
+                return Err(anyhow::anyhow!("--bench-min-rounds must be greater than 0"));
+            }
+            if self.bench_min_rounds > self.bench_rounds {
+                return Err(anyhow::anyhow!(
+                    "--bench-min-rounds ({}) cannot exceed --bench-rounds ({})",
+                    self.bench_min_rounds,
+                    self.bench_rounds
+                ));
+            }
+            if self.bench_stop_cv_throughput <= 0.0 || self.bench_stop_cv_throughput > 1.0 {
+                return Err(anyhow::anyhow!(
+                    "--bench-stop-cv-throughput must be in (0.0, 1.0]"
+                ));
+            }
+            if self.bench_stop_cv_rtt <= 0.0 || self.bench_stop_cv_rtt > 1.0 {
+                return Err(anyhow::anyhow!("--bench-stop-cv-rtt must be in (0.0, 1.0]"));
+            }
+            if self.bench_timeout == 0 {
+                return Err(anyhow::anyhow!("--bench-timeout must be greater than 0"));
+            }
         }
 
         Ok(())

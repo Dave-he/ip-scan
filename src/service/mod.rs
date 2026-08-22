@@ -8,6 +8,12 @@ mod scan_controller;
 pub mod service_prober;
 mod syn_scanner;
 
+pub mod bandwidth_prober;
+
+pub use bandwidth_prober::{
+    summarize_per_domain, BandwidthProber, BandwidthSample, BenchConfig, BenchTarget,
+    DomainSummary, RunSummary, RoundStats,
+};
 pub use con_scanner::{ConScanner, ConScannerConfig};
 pub use geo_service::GeoService;
 #[allow(unused_imports)]

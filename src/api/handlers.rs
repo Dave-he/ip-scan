@@ -618,6 +618,16 @@ pub async fn start_scan(
         node_provider: None,
         node_latitude: None,
         node_longitude: None,
+        bench_bandwidth: false,
+        bench_domain_file: None,
+        bench_concurrency: 100,
+        bench_bytes: 1048576,
+        bench_rounds: 5,
+        bench_min_rounds: 3,
+        bench_stop_cv_throughput: 0.10,
+        bench_stop_cv_rtt: 0.15,
+        bench_timeout: 10,
+        bench_output_dir: None,
     };
 
     // Get shared controller with async lock

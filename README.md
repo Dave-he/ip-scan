@@ -14,6 +14,32 @@ IP-Scan 不只是“端口是否打开”：扫描器写入开放端口的同时
 - **接口**：Actix Web API、Swagger/OpenAPI、Web 管理界面、JSON/CSV 导出。
 - **工程性**：限速、并发控制、超时、断点续扫、循环扫描、旧轮次清理、结构化日志。
 
+## 带宽测试 (`--bench-bandwidth`)
+
+`ip-scan` 现在也能做端到端的带宽/RTT 测量：从 `lists/cn_top_1000.csv` 加载 2000+ 中文域名（百度/腾讯/阿里/字节/京东/B 站/CDN/政府/银行/AI/工具…），对每个域名多轮发起 `Range: bytes=0-1MiB` 的 HTTPS GET，分别记录 DNS / TCP / TTFB / Transfer 耗时，按 `bytes * 8 / transfer_ms` 给出 Mbps 吞吐量，并按 CV(median_throughput) ≤ 0.10 ∧ CV(median_rtt) ≤ 0.15 ∧ ok% ≥ 60% 连续 3 轮触发稳定性停止规则。
+
+```bash
+# 内置清单
+./target/release/ip-scan --bench-bandwidth --node-id local-mac
+
+# 自定义清单 + 更激进的并发
+./target/release/ip-scan --bench-bandwidth \
+    --bench-domain-file my-list.csv \
+    --bench-concurrency 200 \
+    --bench-bytes 2097152 \
+    --bench-rounds 5 \
+    --bench-output-dir results/bandwidth
+```
+
+报告写在 `results/bandwidth/<node_id>/<YYYY-MM-DD>/`：
+
+- `bench-r{N}.jsonl.gz` — 每轮所有样本的 gzipped JSONL
+- `bench.csv` — 全量 CSV（每行 = 一次样本，列同 JSONL）
+- `bench-summary.md` — 每域名 n / ok% / p50 / p95 汇总表
+- `scan_results.db` — 同步写入 `bandwidth_samples` 表，可 SQL 二次分析
+
+样本字段：`ts, round, attempt, target, ip, port, dns_ms, tcp_ms, ttfb_ms, transfer_ms, total_ms, bytes, throughput_mbps, http_status, server, via, content_encoding, accept_ranges, range_ok, error, node_id`。`error` 取值包括 `dns_err / tcp_timeout / tcp_err / http_timeout / http_err / blocked / rate_limited / small_body`；空 = 成功。
+
 ## nmap 兼容
 
 `ip-scan` 接受 nmap 风格 flag 的 long form：`--sS`、`--sT`、`--sV`、`--O`、`--A`、`--F`、`--top-ports N`、`--iL <file>`、`--T<n>`、`--oN <base>`、`--oX <base>`、`--oG <base>`、`--oJ <base>`、`--oA <base>` 等。
