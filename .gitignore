@@ -12,3 +12,5 @@
 *.db-journal
 scan_results.db*
 syn_scan_result.txt
+results/
+lists/accurate_targets.csv
